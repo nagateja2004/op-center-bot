@@ -1,0 +1,50 @@
+[
+  {"id":"direct_01","category":"direct","question":"What is a Factory?","expected_status":"sufficient","expected_terms":["factory"],"expected_manuals":["Modeling"]},
+  {"id":"direct_02","category":"direct","question":"What is a Resource?","expected_status":"sufficient","expected_terms":["resource"],"expected_manuals":["Modeling"]},
+  {"id":"direct_03","category":"direct","question":"What is a Container?","expected_status":"sufficient","expected_terms":["container"]},
+  {"id":"direct_04","category":"direct","question":"What is a configurable data object?","expected_status":"sufficient","expected_terms":["configurable data object","cdo"],"expected_manuals":["Designer"]},
+  {"id":"direct_05","category":"direct","question":"What is a configurable logic flow?","expected_status":"sufficient","expected_terms":["configurable logic flow","clf"],"expected_manuals":["Designer"]},
+  {"id":"direct_06","category":"direct","question":"What is Factory Hierarchy?","expected_status":"sufficient","expected_terms":["factory hierarchy"],"expected_manuals":["Modeling"]},
+  {"id":"direct_07","category":"direct","question":"What is Portal Studio 2.0?","expected_status":"sufficient","expected_terms":["portal studio"]},
+  {"id":"direct_08","category":"direct","question":"What is line assignment?","expected_status":"sufficient","expected_terms":["line assignment"]},
+
+  {"id":"indirect_01","category":"indirect","question":"Which modeling object represents an accounting and reporting division?","expected_status":"sufficient","expected_terms":["factory"]},
+  {"id":"indirect_02","category":"indirect","question":"How does the system represent manufacturing equipment?","expected_status":"sufficient","expected_terms":["resource"]},
+  {"id":"indirect_03","category":"indirect","question":"Where are items grouped while they move through production?","expected_status":"sufficient","expected_terms":["container"]},
+  {"id":"indirect_04","category":"indirect","question":"Which Designer feature lets me define reusable business data?","expected_status":"sufficient","expected_terms":["configurable data object","cdo"]},
+  {"id":"indirect_05","category":"indirect","question":"What feature models configurable execution logic without hard-coding it?","expected_status":"sufficient","expected_terms":["configurable logic flow","clf"]},
+  {"id":"indirect_06","category":"indirect","question":"How are enterprise, factory, area and resource levels related?","expected_status":"sufficient","expected_terms":["factory hierarchy"]},
+  {"id":"indirect_07","category":"indirect","question":"Which tool is used to design portal pages and web parts?","expected_status":"sufficient","expected_terms":["portal studio","web part"]},
+  {"id":"indirect_08","category":"indirect","question":"How does a terminal determine the employee production line?","expected_status":"sufficient","expected_terms":["line assignment"]},
+
+  {"id":"follow_01","category":"follow_up","context_question":"What is a Factory?","question":"How do I define it?","expected_status":"sufficient","expected_terms":["define a factory"]},
+  {"id":"follow_02","category":"follow_up","context_question":"What is Factory Hierarchy?","question":"Show its relationship structure.","expected_status":"sufficient","expected_terms":["factory hierarchy"]},
+  {"id":"follow_03","category":"follow_up","context_question":"What is a Resource?","question":"Which fields does it use?","expected_status":"sufficient","expected_terms":["resource","field"]},
+  {"id":"follow_04","category":"follow_up","context_question":"Explain line assignment.","question":"How do I set it?","expected_status":"sufficient","expected_terms":["line assignment"]},
+  {"id":"follow_05","category":"follow_up","context_question":"What is a configurable data object?","question":"How is it different from an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"]},
+
+  {"id":"procedure_01","category":"procedure","question":"How do I define a Factory?","expected_status":"sufficient","expected_terms":["how to define a factory"]},
+  {"id":"procedure_02","category":"procedure","question":"How do I add a location to a Factory?","expected_status":"sufficient","expected_terms":["add a location"]},
+  {"id":"procedure_03","category":"procedure","question":"How do I log in to Opcenter Execution Core?","expected_status":"sufficient","expected_terms":["how to log in"]},
+  {"id":"procedure_04","category":"procedure","question":"How do I create a web part in Portal Studio?","expected_status":"sufficient","expected_terms":["creating a web part","create a web part"]},
+  {"id":"procedure_05","category":"procedure","question":"How do I collect resource data?","expected_status":"sufficient","expected_terms":["collect resource data"]},
+
+  {"id":"table_01","category":"table_field","question":"Show the Factory field definitions.","expected_status":"sufficient","expected_terms":["field","factory"]},
+  {"id":"table_02","category":"table_field","question":"What fields are on the Set Line Assignment pop-up?","expected_status":"sufficient","expected_terms":["set line assignment","field"]},
+  {"id":"table_03","category":"table_field","question":"List the Resource page field definitions.","expected_status":"sufficient","expected_terms":["resource","field"]},
+  {"id":"table_04","category":"table_field","question":"Show the configurable data object field type definitions.","expected_status":"sufficient","expected_terms":["field type","definition"]},
+  {"id":"table_05","category":"table_field","question":"Which columns are defined for the Factory Hierarchy page?","expected_status":"sufficient","expected_terms":["factory hierarchy","column"]},
+
+  {"id":"comparison_01","category":"comparison","question":"Compare a Factory and a Resource.","expected_status":"sufficient","expected_terms":["factory","resource"]},
+  {"id":"comparison_02","category":"comparison","question":"What is the difference between a CDO and an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"]},
+  {"id":"comparison_03","category":"comparison","question":"Compare a Resource and a Resource Location.","expected_status":"sufficient","expected_terms":["resource","resource location"]},
+  {"id":"comparison_04","category":"comparison","question":"How do CLFs differ from configurable data objects?","expected_status":"sufficient","expected_terms":["clf","configurable data object"]},
+
+  {"id":"unsupported_01","category":"unsupported","question":"Does Opcenter support Kubernetes autoscaling?","expected_status":"in_scope_insufficient","expected_terms":[]},
+  {"id":"unsupported_02","category":"unsupported","question":"How does Opcenter use predictive AI for automatic quality decisions?","expected_status":"in_scope_insufficient","expected_terms":[]},
+  {"id":"unsupported_03","category":"unsupported","question":"Show the Opcenter blockchain deployment procedure.","expected_status":"in_scope_insufficient","expected_terms":[]},
+
+  {"id":"irrelevant_01","category":"irrelevant","question":"How do I bake a chocolate cake?","expected_status":"out_of_scope","expected_terms":[]},
+  {"id":"irrelevant_02","category":"irrelevant","question":"What will the weather be tomorrow?","expected_status":"out_of_scope","expected_terms":[]},
+  {"id":"irrelevant_03","category":"irrelevant","question":"Write a poem about the ocean.","expected_status":"out_of_scope","expected_terms":[]}
+]

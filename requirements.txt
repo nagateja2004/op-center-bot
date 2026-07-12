@@ -1,0 +1,17 @@
+streamlit
+langgraph
+langgraph-checkpoint-sqlite
+langchain-groq
+langchain-core
+langchain-chroma==1.1.0
+langchain-huggingface
+PyMuPDF
+chromadb==1.5.9
+torch==2.3.1
+transformers==4.48.3
+sentence-transformers==3.4.1
+rank-bm25==0.2.2
+graphviz
+python-dotenv
+pydantic
+pytest
