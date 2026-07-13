@@ -38,6 +38,14 @@ def test_deduplication_merges_scores_by_chunk_id() -> None:
 def test_original_query_gets_slightly_more_weight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    exact_calls = 0
+    exact_dedup = retrieval.deduplicate_exact_results
+
+    def counted_exact(results):
+        nonlocal exact_calls
+        exact_calls += 1
+        return exact_dedup(results)
+
     monkeypatch.setattr(
         retrieval,
         "vector_search",
@@ -48,13 +56,85 @@ def test_original_query_gets_slightly_more_weight(
         "bm25_search",
         lambda query, *args, **kwargs: [result(query, {"bm25_rank": 1})],
     )
+    monkeypatch.setattr(retrieval, "heading_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(retrieval, "concept_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(retrieval, "representation_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(retrieval, "deduplicate_exact_results", counted_exact)
 
     results = retrieval.retrieve_multiple_queries("original", ["variation"])
 
     assert results[0]["chunk_id"] == "original"
+    assert exact_calls == 1
 
 
-def test_near_duplicate_field_question_prefers_structured_table() -> None:
+def test_exact_body_heading_retrieval_excludes_toc() -> None:
+    matches = retrieval.heading_search("Explain Defining Numbering Rules.")
+
+    assert matches
+    assert matches[0]["metadata"]["section"] == "Defining Numbering Rules"
+    assert matches[0]["metadata"]["is_toc"] is False
+    assert "Modeling" in matches[0]["metadata"]["manual"]
+    assert matches[0]["retrieval_scores"]["heading_exact"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("question", "entities", "aliases", "manuals", "expected_sections"),
+    [
+        (
+            "How are unique numbers automatically assigned to containers?",
+            ["Numbering Rule", "Container"],
+            ["unique numbers assigned to containers"],
+            ["Modeling"],
+            {"Defining Numbering Rules", "When Defining Numbering Rules for Containers"},
+        ),
+        (
+            "What is the hierarchy of physical modelling?",
+            ["Physical Modeling Sequence", "Factory Hierarchy"],
+            ["physical modeling hierarchy"],
+            ["Modeling"],
+            {"Physical Modeling Sequence", "Factory Hierarchy", "Configuring a Factory Hierarchy"},
+        ),
+        (
+            "What happens before a new value is assigned to a CDO field?",
+            ["Validate Event", "Field Event", "CDO"],
+            ["before a new value is assigned to a CDO field"],
+            ["Designer"],
+            {"Events", "Introduction to CLFs"},
+        ),
+        (
+            "What UI components are placed inside Portal Studio web parts?",
+            ["Portal Studio Control", "Web Part"],
+            ["components inside Portal Studio web parts"],
+            ["Portal Studio"],
+            {"Controls", "Adding a Control to a Web Part"},
+        ),
+    ],
+)
+def test_concept_and_alias_paths_retrieve_expected_evidence(
+    question, entities, aliases, manuals, expected_sections
+) -> None:
+    matches = retrieval.retrieve_multiple_queries(
+        question,
+        entities=entities,
+        aliases=aliases,
+        preferred_manuals=manuals,
+        limit=10,
+    )
+
+    matched_sections = [str(match["metadata"].get("section", "")) for match in matches]
+    assert any(
+        section == expected or section.endswith(f": {expected}")
+        for section in matched_sections
+        for expected in expected_sections
+    )
+    assert any(
+        match["retrieval_scores"].get("concept_exact")
+        or match["retrieval_scores"].get("alias_match")
+        for match in matches
+    )
+
+
+def test_near_duplicate_field_question_preserves_content_type_diversity() -> None:
     prose = result("prose", {"final_score": 1.0})
     prose["text"] = "Field Description Name The object name used by the factory."
     table = result("table", {"final_score": 0.9})
@@ -64,7 +144,7 @@ def test_near_duplicate_field_question_prefers_structured_table() -> None:
 
     deduplicated = deduplicate_results([prose, table], intent="field table")
 
-    assert [item["chunk_id"] for item in deduplicated] == ["table"]
+    assert [item["chunk_id"] for item in deduplicated] == ["prose", "table"]
 
 
 def test_near_matches_for_different_aspects_are_preserved() -> None:
@@ -99,7 +179,7 @@ def test_complementary_evidence_and_segment_are_preserved() -> None:
     assert len(deduplicate_results([parent, child])) == 2
 
 
-def test_reranker_failure_keeps_order_and_deduplicates(
+def test_reranker_failure_keeps_prepared_order_without_another_dedup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(retrieval, "_disabled_rerankers", set())
@@ -115,7 +195,7 @@ def test_reranker_failure_keeps_order_and_deduplicates(
 
     reranked = retrieval.rerank_documents("question", [first, duplicate])
 
-    assert [item["chunk_id"] for item in reranked] == ["first"]
+    assert [item["chunk_id"] for item in reranked] == ["first", "second"]
     assert reranked[0]["retrieval_scores"]["reranker_fallback"] == 1.0
 
 
@@ -231,3 +311,179 @@ def test_evidence_resolution_deduplicates_by_evidence_id_and_merges_aspects(
         "1. Configure.",
         "2. Run.",
     ]
+
+
+def test_pre_rerank_cap_prefers_representation_type_diversity() -> None:
+    heading = result("heading", {"final_score": 1.0})
+    body = result("body", {"final_score": 0.9})
+    definition = result("definition", {"final_score": 0.8})
+    for candidate, representation_type in (
+        (heading, "heading"),
+        (body, "body"),
+        (definition, "definition"),
+    ):
+        candidate["metadata"].update(
+            {"evidence_id": "e1", "representation_type": representation_type}
+        )
+
+    prepared = retrieval.prepare_rerank_candidates(
+        [heading, body, definition], limit=20
+    )
+
+    assert [candidate["chunk_id"] for candidate in prepared] == ["heading", "body"]
+
+
+def test_post_rerank_preserves_near_text_and_uses_score_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lower = result("lower", {"final_score": 1.0})
+    higher = result("higher", {"final_score": 0.9})
+    lower["text"] = "A shared manual sentence with enough matching words for overlap detection."
+    higher["text"] = lower["text"] + " Extra."
+    lower["metadata"].update({"evidence_id": "e1", "manual": "Manual"})
+    higher["metadata"].update({"evidence_id": "e2", "manual": "Manual"})
+    class Reranker:
+        def predict(self, pairs, **kwargs):
+            return [0.2, 0.9]
+
+    monkeypatch.setattr(retrieval, "_disabled_rerankers", set())
+    monkeypatch.setattr(retrieval, "create_reranker", lambda config: Reranker())
+    monkeypatch.setattr(
+        retrieval,
+        "deduplicate_results",
+        lambda *args, **kwargs: pytest.fail("near-text dedup must not run"),
+    )
+
+    reranked = retrieval.rerank_documents("question", [lower, higher])
+
+    assert [candidate["chunk_id"] for candidate in reranked] == ["higher", "lower"]
+
+
+def test_representation_vector_result_retains_parent_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    representation = {
+        "representation_id": "r1",
+        "evidence_id": "e1",
+        "representation_type": "procedure_title",
+        "text": "Procedure: Configuring a Resource",
+        "metadata": {
+            "manual": "Modeling Guide",
+            "source_file": "manual.pdf",
+            "chapter": "Resources",
+            "section": "Configuring a Resource",
+            "pdf_page": 5,
+        },
+        "embedding_token_count": 8,
+    }
+
+    class Embedding:
+        def embed_query(self, query):
+            return [1.0]
+
+    class Collection:
+        def query(self, **kwargs):
+            return {"ids": [["r1"]], "distances": [[0.1]]}
+
+    resources = SimpleNamespace(
+        embedding_model=Embedding(),
+        representation_collection=Collection(),
+        representations_by_id={"r1": representation},
+    )
+    monkeypatch.setattr(retrieval, "load_resources", lambda config: resources)
+
+    matches = retrieval.representation_search("configure resource")
+
+    assert matches[0]["metadata"]["evidence_id"] == "e1"
+    assert matches[0]["metadata"]["representation_type"] == "procedure_title"
+    assert matches[0]["metadata"]["chunk_level"] == "representation"
+
+
+@pytest.mark.parametrize(
+    "representation_type",
+    ["heading", "definition", "procedure_title", "table_title_headers"],
+)
+def test_live_representation_vectors_retrieve_their_parent(
+    representation_type: str,
+) -> None:
+    resources = retrieval.load_resources()
+    target = next(
+        item
+        for item in resources.representations_by_id.values()
+        if item["representation_type"] == representation_type
+    )
+
+    matches = retrieval.representation_search(target["text"], top_k=5)
+
+    assert target["evidence_id"] in {
+        match["metadata"]["evidence_id"] for match in matches
+    }
+
+
+def test_indirect_definition_wording_retrieves_direct_heading_parent() -> None:
+    direct = retrieval.representation_search("Defining Numbering Rules", top_k=5)
+    indirect = retrieval.representation_search(
+        "Numbering Rule assigns unique tracking numbers to quality records and containers",
+        top_k=5,
+    )
+
+    assert direct[0]["metadata"]["evidence_id"] == indirect[0]["metadata"]["evidence_id"]
+    assert direct[0]["metadata"]["section"] == "Defining Numbering Rules"
+
+
+def test_exact_only_dedup_precedes_reranking_and_keeps_near_text() -> None:
+    exact = result("exact", {"final_score": 1.0})
+    exact_duplicate = result("exact-duplicate", {"final_score": 0.9})
+    near = result("near", {"final_score": 0.8})
+    exact["text"] = "Same normalized representation text"
+    exact_duplicate["text"] = "Same   normalized representation text"
+    near["text"] = "Same normalized representation text with an extra detail"
+    for candidate, representation_type in (
+        (exact, "heading"),
+        (exact_duplicate, "definition"),
+        (near, "body"),
+    ):
+        candidate["metadata"].update(
+            {"evidence_id": "e1", "representation_type": representation_type}
+        )
+
+    fused = retrieval.deduplicate_exact_results([exact, exact_duplicate, near])
+    prepared = retrieval.prepare_rerank_candidates(fused, limit=20)
+
+    assert [candidate["chunk_id"] for candidate in prepared] == ["exact", "near"]
+
+
+def test_resolution_merges_selected_segments_and_representations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment = result("s1", {"reranker_score": 0.9})
+    representation = result("r1", {"reranker_score": 0.8})
+    segment["metadata"] = {"evidence_id": "e1", "aspects": ["configuration"]}
+    representation["metadata"] = {
+        "evidence_id": "e1",
+        "aspects": ["runtime"],
+        "chunk_level": "representation",
+        "representation_type": "heading",
+    }
+    unit = {
+        "evidence_id": "e1",
+        "text": "Complete evidence.",
+        "content_type": "definition",
+        "metadata": {"manual": "Manual", "source_file": "manual.pdf"},
+        "structured_table": None,
+        "procedure_steps": [],
+        "annotations": [],
+    }
+    monkeypatch.setattr(
+        retrieval,
+        "load_resources",
+        lambda config: SimpleNamespace(evidence_units_by_id={"e1": unit}),
+    )
+
+    resolved = retrieval.resolve_evidence_units([segment, representation])
+
+    assert resolved[0]["metadata"]["aspects"] == ["configuration", "runtime"]
+    assert resolved[0]["metadata"]["matched_representation_types"] == ["heading"]
+    assert resolved[0]["metadata"]["selected_candidate_ids"] == ["s1", "r1"]
+    assert resolved[0]["metadata"]["selected_segment_id"] == "s1"
+    assert resolved[0]["metadata"]["selected_representation_id"] == "r1"

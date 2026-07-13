@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Literal
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -47,7 +48,12 @@ def _create_checkpointer() -> SqliteSaver:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=30000")
-    saver = SqliteSaver(connection)
+    saver = SqliteSaver(
+        connection,
+        serde=JsonPlusSerializer(
+            allowed_msgpack_modules=[("src.schemas", "SourceInfo")]
+        ),
+    )
     saver.setup()
     return saver
 

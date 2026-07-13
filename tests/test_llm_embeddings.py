@@ -1,3 +1,4 @@
+import logging
 from typing import cast
 
 from groq import APITimeoutError
@@ -51,6 +52,7 @@ def test_structured_call_uses_one_distinct_fallback_model(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO)
     calls: list[str] = []
 
     class Invocation:
@@ -111,6 +113,23 @@ def test_rate_limited_model_is_not_retried_when_fallback_matches_primary(
     assert "evidence_count=4" in caplog.text
     assert "private manual prompt" not in caplog.text
     assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+def test_plain_llm_call_removes_hidden_reasoning(monkeypatch) -> None:
+    class Client:
+        def invoke(self, prompt):
+            return AIMessage(content="<think>internal reasoning</think>\nClear answer [S1].")
+
+    monkeypatch.setattr(
+        llm,
+        "role_config",
+        lambda role: RoleConfig("primary", "", 0, 100, 10, False),
+    )
+    monkeypatch.setattr(llm, "create_llm", lambda role, model: Client())
+
+    result = call_llm("prompt", task="verifier")
+
+    assert result.content == "Clear answer [S1]."
 
 
 @pytest.mark.parametrize(

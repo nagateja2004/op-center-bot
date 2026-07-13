@@ -8,6 +8,11 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
+EvidenceStatus = Literal[
+    "sufficient", "partial", "retry", "in_scope_insufficient", "out_of_scope"
+]
+
+
 @dataclass(slots=True)
 class DocumentChunk:
     id: str
@@ -51,6 +56,39 @@ class RetrievalSegment(TypedDict):
     next_segment_id: str | None
     word_count: int
     embedding_token_count: int
+    effective_embedding_limit: int
+
+
+SearchRepresentationType = Literal[
+    "heading",
+    "definition",
+    "procedure_title",
+    "table_title_headers",
+    "field_name_description",
+    "acronym_alias",
+]
+
+
+class SearchRepresentation(TypedDict):
+    representation_id: str
+    evidence_id: str
+    representation_type: SearchRepresentationType
+    text: str
+    metadata: dict[str, Any]
+    embedding_token_count: int
+
+
+class CompressedEvidenceView(TypedDict):
+    evidence_id: str
+    aspect: str
+    compressed_text: str
+    selected_sentence_indexes: list[int]
+    selected_step_indexes: list[int]
+    selected_table_row_indexes: list[int]
+    compression_method: str
+    original_character_count: int
+    compressed_character_count: int
+    source_metadata: dict[str, Any]
 
 
 class SourceInfo(BaseModel):
@@ -86,13 +124,15 @@ class QueryPlan(BaseModel):
     entities: list[str] = Field(default_factory=list)
     search_queries: list[str] = Field(default_factory=list)
     preferred_manuals: list[str] = Field(default_factory=list)
+    exact_phrases: list[str] = Field(default_factory=list)
+    canonical_terms: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    manual_hints: list[str] = Field(default_factory=list)
     needs_diagram: bool = False
 
 
 class EvidenceGrade(BaseModel):
-    status: Literal[
-        "sufficient", "partial", "retry", "in_scope_insufficient", "out_of_scope"
-    ]
+    status: EvidenceStatus
     reason: str
     missing_concepts: list[str] = Field(default_factory=list)
 
@@ -100,6 +140,12 @@ class EvidenceGrade(BaseModel):
 class RAGState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     standalone_question: str
+    exact_phrases: list[str]
+    domain_status: Literal["in_scope", "out_of_scope"]
+    domain_terms: list[str]
+    canonical_terms: list[str]
+    aliases: list[str]
+    manual_hints: list[str]
     intent: str
     complexity: Literal["single_topic", "multi_aspect"]
     required_aspects: list[str]
@@ -115,14 +161,14 @@ class RAGState(TypedDict, total=False):
     expanded_docs: list[RetrievedDocument]
     reranked_docs: list[RetrievedDocument]
     aspect_documents: dict[str, list[RetrievedDocument]]
+    compressed_views: dict[str, list[CompressedEvidenceView]]
     retry_count: int
-    evidence_status: Literal[
-        "sufficient", "partial", "retry", "in_scope_insufficient", "out_of_scope"
-    ]
+    evidence_status: EvidenceStatus
     evidence_reason: str
     missing_concepts: list[str]
-    coverage: dict[str, str]
+    coverage: dict[str, EvidenceStatus]
     missing_aspects: list[str]
+    partial_aspects: list[str]
     manual_coverage: dict[str, bool]
     answer: str
     sources: list[SourceInfo]

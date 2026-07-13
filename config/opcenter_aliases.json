@@ -1,0 +1,157 @@
+{
+  "Numbering Rule": {
+    "aliases": [
+      "numbering rules",
+      "automatic numbering",
+      "unique numbers assigned to containers",
+      "unique identifiers automatically generated for containers",
+      "automatically generated identifiers",
+      "prefix sequence suffix"
+    ],
+    "manual_hints": ["Modeling"]
+  },
+  "Physical Modeling Sequence": {
+    "aliases": [
+      "physical modelling sequence",
+      "physical modeling hierarchy",
+      "hierarchy of physical modelling"
+    ],
+    "manual_hints": ["Modeling"]
+  },
+  "Factory Hierarchy": {
+    "aliases": [
+      "company-to-equipment hierarchy",
+      "company to equipment hierarchy",
+      "enterprise-to-machine hierarchy",
+      "factory structure"
+    ],
+    "manual_hints": ["Modeling"]
+  },
+  "Information Model": {
+    "aliases": ["information model", "business information model"],
+    "manual_hints": ["Getting Started", "Modeling"]
+  },
+  "Physical Model": {
+    "aliases": ["physical model", "physical modeling", "physical modelling"],
+    "manual_hints": ["Modeling"]
+  },
+  "Process Model": {
+    "aliases": ["process model", "manufacturing process model"],
+    "manual_hints": ["Modeling"]
+  },
+  "Execution Model": {
+    "aliases": ["execution model", "runtime execution model"],
+    "manual_hints": ["Getting Started", "Shop Floor"]
+  },
+  "CDO": {
+    "aliases": ["configurable data object", "configurable data objects", "business object"],
+    "manual_hints": ["Designer"]
+  },
+  "CLF": {
+    "aliases": ["configurable logic flow", "configurable logic flows", "logic flow"],
+    "manual_hints": ["Designer"]
+  },
+  "Scalar Field": {
+    "aliases": ["scalar fields", "single-value field", "single value field"],
+    "manual_hints": ["Designer"]
+  },
+  "List Field": {
+    "aliases": ["list fields", "multi-value field", "multiple value field"],
+    "manual_hints": ["Designer"]
+  },
+  "Field Event": {
+    "aliases": ["field events", "field value changes", "what runs when a field value changes"],
+    "manual_hints": ["Designer"]
+  },
+  "Validate Event": {
+    "aliases": [
+      "validate event",
+      "field validation event",
+      "validate field value",
+      "validation before assigning a field",
+      "before a new field value is accepted",
+      "before a new value is assigned to a CDO field"
+    ],
+    "manual_hints": ["Designer"]
+  },
+  "Portal Studio Control": {
+    "aliases": [
+      "portal studio controls",
+      "portal controls",
+      "page controls",
+      "UI components placed inside Portal Studio web parts",
+      "components inside Portal Studio web parts"
+    ],
+    "manual_hints": ["Portal Studio"]
+  },
+  "Web Part": {
+    "aliases": ["web parts", "portal web part", "page web part"],
+    "manual_hints": ["Portal Studio"]
+  },
+  "Role": {
+    "aliases": ["roles", "user role", "security role"],
+    "manual_hints": ["Modeling", "Portal Studio"]
+  },
+  "Permission": {
+    "aliases": ["permissions", "access permission", "security permission"],
+    "manual_hints": ["Modeling", "Portal Studio"]
+  },
+  "Employee": {
+    "aliases": ["employees", "operator account", "user account"],
+    "manual_hints": ["Modeling"]
+  },
+  "Security Server": {
+    "aliases": ["security server", "authentication server", "security service"],
+    "manual_hints": ["Installation"]
+  },
+  "SSL": {
+    "aliases": ["ssl", "tls", "secure sockets layer", "https certificate"],
+    "manual_hints": ["Installation"]
+  },
+  "Resource": {
+    "aliases": ["machine", "equipment", "work center", "valid machine"],
+    "manual_hints": ["Modeling"]
+  },
+  "Resource Group": {
+    "aliases": [
+      "resource groups",
+      "machine group",
+      "valid machines",
+      "machine associated with a workflow step",
+      "which machine is valid"
+    ],
+    "manual_hints": ["Modeling"]
+  },
+  "Spec": {
+    "aliases": ["workflow step", "manufacturing step", "process step"],
+    "manual_hints": ["Modeling"]
+  },
+  "Workflow": {
+    "aliases": ["workflows", "process route", "manufacturing route"],
+    "manual_hints": ["Modeling", "Shop Floor"]
+  },
+  "Sampling Plan": {
+    "aliases": ["sampling plans", "inspection sampling plan", "sample plan"],
+    "manual_hints": ["Modeling", "Shop Floor"]
+  },
+  "Sample Test": {
+    "aliases": ["sample tests", "sampling test", "inspection test"],
+    "manual_hints": ["Modeling", "Shop Floor"]
+  },
+  "Move Transaction": {
+    "aliases": ["move transaction", "move container", "advance container", "next workflow step"],
+    "manual_hints": ["Shop Floor"]
+  },
+  "Container": {
+    "aliases": ["containers", "manufacturing lot", "unit container"],
+    "manual_hints": ["Modeling", "Shop Floor"]
+  },
+  "Recipe": {
+    "aliases": ["recipes", "manufacturing recipe"],
+    "manual_hints": ["Modeling"]
+  },
+  "Recipe Pattern": {
+    "aliases": ["recipe patterns", "recipe template", "reusable recipe pattern"],
+    "manual_hints": ["Modeling"]
+  }
+}

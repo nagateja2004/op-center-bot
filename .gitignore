@@ -18,6 +18,7 @@ __pycache__/
 htmlcov/
 .cache/
 data/chat_memory.sqlite
+data/chat_memory.sqlite-*
 manuals/*.pdf
 indexes/chroma/*
 !indexes/chroma/.gitkeep
@@ -25,3 +26,7 @@ indexes/bm25.pkl
 indexes/evidence_units.json
 indexes/retrieval_segments.json
 indexes/manifest.json
+indexes/heading_index.json
+indexes/concept_index.json
+indexes/ingestion_audit.json
+indexes/search_representations.json

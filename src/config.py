@@ -34,6 +34,9 @@ class Settings:
         default_factory=lambda: os.getenv("EMBEDDING_MODEL", "").strip()
         or "sentence-transformers/all-MiniLM-L6-v2"
     )
+    embedding_safety_limit: int = field(
+        default_factory=lambda: _env_int("EMBEDDING_SAFETY_LIMIT", 512)
+    )
     reranker_model: str = field(
         default_factory=lambda: os.getenv("RERANKER_MODEL", "").strip()
         or "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -75,8 +78,36 @@ class Settings:
     def retrieval_segments_path(self) -> Path:
         return _env_path("RETRIEVAL_SEGMENTS_PATH", self.indexes_dir / "retrieval_segments.json")
 
+    @property
+    def search_representations_path(self) -> Path:
+        return _env_path(
+            "SEARCH_REPRESENTATIONS_PATH",
+            self.indexes_dir / "search_representations.json",
+        )
+
+    @property
+    def heading_index_path(self) -> Path:
+        return self.indexes_dir / "heading_index.json"
+
+    @property
+    def concept_index_path(self) -> Path:
+        return self.indexes_dir / "concept_index.json"
+
+    @property
+    def ingestion_audit_path(self) -> Path:
+        return self.indexes_dir / "ingestion_audit.json"
+
+    @property
+    def alias_config_path(self) -> Path:
+        return ROOT_DIR / "config" / "opcenter_aliases.json"
+
     def validate(self) -> Self:
         """Raise a clear error when required environment variables are absent."""
+        if self.document_parser.casefold() != "pymupdf":
+            raise ValueError(
+                f"Unsupported DOCUMENT_PARSER {self.document_parser!r}; "
+                "only 'pymupdf' is supported."
+            )
         required = {
             "GROQ_API_KEY": self.groq_api_key,
             "EMBEDDING_MODEL": self.embedding_model,

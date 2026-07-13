@@ -112,11 +112,17 @@ def render_table(rows: list[list[Any]]) -> None:
     unique_headers: list[str] = []
     for index, header in enumerate(headers):
         unique_headers.append(header if header not in unique_headers else f"{header} {index + 1}")
-    records = [
-        dict(zip(unique_headers, list(row) + [""] * (width - len(row)), strict=True))
-        for row in rows[1:]
-    ]
-    st.dataframe(records, hide_index=True, use_container_width=True)
+    normalized_rows = [list(row) + [""] * (width - len(row)) for row in rows[1:]]
+    escape = lambda value: str(value).replace("|", r"\|").replace("\n", "<br>")
+    st.markdown(
+        "\n".join(
+            [
+                f"| {' | '.join(map(escape, unique_headers))} |",
+                f"| {' | '.join(['---'] * width)} |",
+                *(f"| {' | '.join(map(escape, row))} |" for row in normalized_rows),
+            ]
+        )
+    )
 
 
 def render_sources(state: dict[str, Any]) -> None:
@@ -154,7 +160,7 @@ def render_sources(state: dict[str, Any]) -> None:
 
 def render_artifacts(state: dict[str, Any], show_sources: bool) -> None:
     if state.get("diagram_dot"):
-        st.graphviz_chart(state["diagram_dot"], use_container_width=True)
+        st.graphviz_chart(state["diagram_dot"], width="stretch")
     if show_sources and state.get("sources"):
         st.subheader("Cited sources")
         render_sources(state)
@@ -187,10 +193,10 @@ def answer_chunks(answer: str):
 
 with st.sidebar:
     st.header("Conversation")
-    if st.button("New conversation", use_container_width=True):
+    if st.button("New conversation", width="stretch"):
         st.session_state.thread_id = str(uuid4())
         st.rerun()
-    if st.button("Delete current conversation", use_container_width=True):
+    if st.button("Delete current conversation", width="stretch"):
         graph.checkpointer.delete_thread(st.session_state.thread_id)
         st.session_state.thread_id = str(uuid4())
         st.rerun()
