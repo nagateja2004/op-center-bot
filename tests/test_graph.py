@@ -4,6 +4,7 @@ from uuid import uuid4
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.graph import graph, route_after_grade
+from src.schemas import SourceInfo
 
 
 def test_retry_route_is_bounded() -> None:
@@ -25,6 +26,16 @@ def test_graph_uses_sqlite_thread_memory() -> None:
     snapshot = graph.get_state({"configurable": {"thread_id": "pytest-thread"}})
 
     assert snapshot.values == {}
+
+
+def test_checkpoint_serializer_explicitly_allows_source_info() -> None:
+    source = SourceInfo(source_id="S1", source="manual.pdf")
+
+    restored = graph.checkpointer.serde.loads_typed(
+        graph.checkpointer.serde.dumps_typed(source)
+    )
+
+    assert restored == source
 
 
 def test_sqlite_checkpointer_allows_streamlit_threads() -> None:

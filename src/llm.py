@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from groq import APIConnectionError, APIError, APIStatusError, APITimeoutError
@@ -45,6 +46,7 @@ ALLOWED_GROQ_ROLES = frozenset(
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 logger = logging.getLogger(__name__)
+THINK_END_RE = re.compile(r"</think>\s*", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,11 +61,11 @@ class RoleConfig:
 
 ROLE_DEFAULTS: dict[GroqRole, RoleConfig] = {
     "planner": RoleConfig("openai/gpt-oss-20b", "meta-llama/llama-4-scout-17b-16e-instruct", 0.0, 1024, 30, True),
-    "query_broadening": RoleConfig("llama-3.1-8b-instant", "openai/gpt-oss-20b", 0.1, 512, 20, False),
+    "query_broadening": RoleConfig("openai/gpt-oss-20b", "", 0.1, 512, 20, False),
     "grader": RoleConfig("openai/gpt-oss-20b", "meta-llama/llama-4-scout-17b-16e-instruct", 0.0, 1024, 40, True),
-    "answer": RoleConfig("openai/gpt-oss-120b", "llama-3.3-70b-versatile", 0.1, 4096, 90, False),
-    "verifier": RoleConfig("llama-3.3-70b-versatile", "openai/gpt-oss-20b", 0.0, 4096, 60, False),
-    "diagram": RoleConfig("llama-3.1-8b-instant", "openai/gpt-oss-20b", 0.0, 2048, 30, False),
+    "answer": RoleConfig("openai/gpt-oss-120b", "qwen/qwen3.6-27b", 0.1, 4096, 90, False),
+    "verifier": RoleConfig("qwen/qwen3.6-27b", "openai/gpt-oss-20b", 0.0, 4096, 60, False),
+    "diagram": RoleConfig("openai/gpt-oss-20b", "", 0.0, 2048, 30, False),
 }
 
 PRIMARY_MODEL_ALIASES: dict[GroqRole, str] = {
@@ -162,15 +164,21 @@ def call_llm(
     models = _distinct_models(policy)
     for attempt, model in enumerate(models):
         try:
-            return cast(
+            message = cast(
                 AIMessage,
                 _call_groq(task, lambda: create_llm(task, model).invoke(prompt)),
             )
-        except GroqRequestError:
+            if THINK_END_RE.search(str(message.content)):
+                message = message.model_copy(
+                    update={"content": THINK_END_RE.split(str(message.content))[-1].strip()}
+                )
+            return message
+        except GroqRequestError as exc:
             recovered = attempt == 0 and len(models) == 2
             _log_failure(
                 task, model, None, prompt, evidence_count,
-                "primary" if attempt == 0 else "fallback", recovered=recovered,
+                "primary" if attempt == 0 else "fallback", error=exc,
+                recovered=recovered,
             )
             if not recovered:
                 raise
@@ -195,7 +203,11 @@ def call_structured(
             result = _call_groq(
                 task,
                 lambda: create_llm(task, model)
-                .with_structured_output(schema, method="json_schema", strict=False)
+                .with_structured_output(
+                    schema,
+                    method="json_schema",
+                    strict=model.startswith("openai/gpt-oss-"),
+                )
                 .invoke(prompt),
             )
             return result if isinstance(result, schema) else schema.model_validate(result)
@@ -204,7 +216,8 @@ def call_structured(
             recovered = attempt == 0 and len(models) == 2
             _log_failure(
                 task, model, schema, prompt, evidence_count,
-                "primary" if attempt == 0 else "fallback", recovered=recovered,
+                "primary" if attempt == 0 else "fallback", error=exc,
+                recovered=recovered,
             )
             if not recovered:
                 break
@@ -213,7 +226,8 @@ def call_structured(
             recovered = attempt == 0 and len(models) == 2
             _log_failure(
                 task, model, schema, prompt, evidence_count,
-                "primary" if attempt == 0 else "fallback", recovered=recovered,
+                "primary" if attempt == 0 else "fallback", error=last_error,
+                recovered=recovered,
             )
             if not recovered:
                 break
@@ -236,13 +250,17 @@ def _log_failure(
     evidence_count: int,
     stage: str,
     *,
+    error: GroqRequestError,
     recovered: bool,
 ) -> None:
-    (logger.warning if recovered else logger.error)(
-        "Groq role attempt failed role=%s model=%s schema=%s prompt_length=%d evidence_count=%d stage=%s recovered=%s",
+    (logger.info if recovered else logger.error)(
+        "Groq role attempt failed role=%s model=%s schema=%s kind=%s status=%s "
+        "prompt_length=%d evidence_count=%d stage=%s recovered=%s",
         role,
         model,
         schema.__name__ if schema else "none",
+        error.kind,
+        error.status_code,
         len(str(prompt)),
         evidence_count,
         stage,

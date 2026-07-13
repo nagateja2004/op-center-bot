@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 import json
+import logging
 import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from src.config import settings
+from src.compression import compress_evidence
+from src.config import ROOT_DIR, settings
 from src.llm import GroqRequestError, call_llm, call_structured
 from src.prompts import (
     ANSWER_GENERATION_PROMPT,
@@ -21,7 +23,6 @@ from src.prompts import (
     SUPPORTED_OUTPUT_TYPES,
 )
 from src.retrieval import (
-    deduplicate_results,
     expand_context as expand_retrieval_context,
     rerank_documents as cross_encoder_rerank,
     resolve_evidence_units,
@@ -37,23 +38,53 @@ from src.schemas import (
 
 
 DIAGRAM_RE = re.compile(r"\b(?:hierarch\w*|process|workflow|architecture|relationship)\b", re.I)
-OPCENTER_TERMS = {
-    "opcenter",
-    "factory",
-    "resource",
-    "container",
-    "modeling",
-    "shop floor",
-    "portal studio",
-    "cdo",
-    "clf",
-    "sampling",
-    "lot",
-    "manufacturing",
-    "workflow",
+logger = logging.getLogger(__name__)
+ALIAS_CONFIG_PATH = ROOT_DIR / "config" / "opcenter_aliases.json"
+DOMAIN_CONCEPTS = {
+    "Opcenter Execution Core": ("opcenter execution core", "execution core", "opcenter"),
+    "Electronic Signatures": (
+        "electronic signatures", "electronic signature", "esignatures", "esignature",
+        "e-signatures", "e-signature", "esig requirements", "esig requirement", "esig",
+    ),
+    "Physical Modeling Sequence": (
+        "physical modeling sequence", "physical modelling sequence",
+        "physical modeling hierarchy", "physical modelling hierarchy",
+        "hierarchy of physical modeling", "hierarchy of physical modelling",
+    ),
+    "Factory Hierarchy": ("factory hierarchy", "company-to-machine hierarchy"),
+    "Information Model": ("information model",),
+    "Physical Model": ("physical model", "physical modeling", "physical modelling"),
+    "Process Model": ("process model",),
+    "Execution Model": ("execution model",),
+    "Enterprise": ("enterprise", "company"),
+    "Factory": ("factory",),
+    "Location": ("location",),
+    "Resource": ("resource", "machine", "equipment"),
+    "Workflow": ("workflow",),
+    "Spec": ("manufacturing step", "workflow step", "spec"),
+    "CDO": ("configurable data object", "cdo"),
+    "CLF": ("configurable logic flow", "clf"),
+    "Container": ("container",),
+    "Shop Floor": ("shop floor",),
+    "Portal Studio": ("portal studio",),
+    "Designer": ("designer",),
+    "Sampling": ("sampling",),
+    "Manufacturing": ("manufacturing",),
+    "Lot": ("lot",),
 }
+OPCENTER_TERMS = {
+    alias for aliases in DOMAIN_CONCEPTS.values() for alias in aliases
+}
+CLEARLY_UNRELATED_RE = re.compile(
+    r"\b(?:bake|cake|weather|forecast|poem|ocean|stock price|sports score|"
+    r"football|cricket|movie review|restaurant|vacation|capital of|president of)\b",
+    re.I,
+)
 CITATION_RE = re.compile(r"\[S(\d+)\]")
 GROUPED_CITATION_RE = re.compile(r"\[(S\d+(?:\s*[,;]\s*S\d+)+)\]", re.I)
+DECORATIVE_CITATION_RE = re.compile(
+    r"【\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*】", re.I
+)
 MAX_EVIDENCE_SOURCES = 8
 GRADER_EXCERPT_CHARS = 600
 ANSWER_EXCERPT_CHARS = 500
@@ -104,23 +135,46 @@ def understand_question(state: RAGState) -> RAGState:
     except GroqRequestError:
         plan = _deterministic_plan(question)
     standalone = plan.standalone_question.strip() or question
+    domain = _merge_plan_domain(
+        question,
+        _domain_context(f"{question} {standalone}"),
+        plan,
+    )
     required_output = _required_output(standalone, plan.required_output, plan.intent)
     aspects = _required_aspects(standalone, plan.required_aspects)
     required_manuals = _required_manuals(standalone)
-    entities = list(plan.entities)
+    entities = _unique_text([*plan.entities, *domain["canonical_terms"]])
     if _is_sampling_movement_question(standalone):
         entities = _unique_text([*entities, *SAMPLING_ALLOWED_ENTITIES])
+    concept_queries = _unique_text([
+        *plan.exact_phrases,
+        *domain["canonical_terms"],
+        *domain["aliases"],
+    ])
     aspect_queries = {
         aspect: _aspect_queries(
             aspect,
-            [],
-            plan.entities,
+            plan.search_queries,
+            concept_queries,
+            multiple_aspects=len(aspects) > 1,
         )
         for aspect in aspects
     }
-    queries = _ensure_queries(standalone, plan.search_queries, plan.entities)
+    queries = _ensure_queries(standalone, plan.search_queries, entities)
+    preferred_manuals = _unique_text([
+        *required_manuals,
+        *domain["manual_hints"],
+        *plan.preferred_manuals,
+    ])
+    logger.info(
+        "question_domain status=%s terms=%s canonical=%s aliases=%s aspects=%s manuals=%s",
+        domain["domain_status"], domain["domain_terms"], domain["canonical_terms"],
+        domain["aliases"], aspect_queries, preferred_manuals,
+    )
     return {
         "standalone_question": standalone,
+        "exact_phrases": list(plan.exact_phrases),
+        **domain,
         "intent": plan.intent,
         "complexity": "multi_aspect" if len(aspects) > 1 else "single_topic",
         "required_aspects": aspects,
@@ -128,14 +182,32 @@ def understand_question(state: RAGState) -> RAGState:
         "required_output": required_output,
         "entities": entities,
         "search_queries": queries,
-        "manual_filters": {"manuals": plan.preferred_manuals},
+        "manual_filters": {"manuals": preferred_manuals},
         "required_manuals": required_manuals,
         "needs_diagram": (
             plan.needs_diagram
             or "diagram" in required_output
             or bool(DIAGRAM_RE.search(standalone))
         ),
-        "retry_count": state.get("retry_count", 0),
+        "retry_count": 0,
+        "missing_aspects": [],
+        "missing_concepts": [],
+        "partial_aspects": [],
+        "coverage": {},
+        "manual_coverage": {},
+        "aspect_documents": {},
+        "compressed_views": {},
+        "retrieved_docs": [],
+        "expanded_docs": [],
+        "reranked_docs": [],
+        "evidence_reason": "",
+        "answer": "",
+        "sources": [],
+        "grounded": False,
+        "unsupported_claims": [],
+        "diagram_dot": None,
+        "diagram_supported": False,
+        "llm_error_role": "",
     }
 
 
@@ -151,12 +223,36 @@ def retrieve_documents(state: RAGState) -> RAGState:
     for aspect in aspects:
         if retrying and aspect not in missing:
             continue
+        queries = state.get("aspect_queries", {}).get(aspect, [aspect])
+        term_queries = [
+            query for query in queries
+            if query.casefold() != state["standalone_question"].casefold()
+        ]
+        retrieval_entities = _relevant_retrieval_terms(
+            aspect, term_queries, state.get("entities", [])
+        )
+        retrieval_aliases = _relevant_retrieval_terms(
+            aspect, term_queries, state.get("aliases", [])
+        )
         documents = retrieve_multiple_queries(
-            aspect,
-            state.get("aspect_queries", {}).get(aspect, [aspect]),
-            entities=state.get("entities", []),
+            standalone_query=state["standalone_question"],
+            search_queries=queries,
+            entities=retrieval_entities,
+            aliases=retrieval_aliases,
             preferred_manuals=_manual_preferences(state.get("manual_filters", {})),
             intent=f"{state.get('intent', '')} {aspect}",
+        )
+        logger.info(
+            "aspect_retrieval standalone=%r aspect=%r queries=%s headings=%s concepts=%s "
+            "preferred=%s fused=%s evidence_ids=%s",
+            state["standalone_question"],
+            aspect,
+            queries,
+            _matched_values(documents, "matched_heading"),
+            _matched_values(documents, "matched_concept"),
+            _manual_preferences(state.get("manual_filters", {})),
+            _section_names(documents[:8]),
+            _evidence_ids(documents[:8]),
         )
         aspect_documents[aspect] = [
             _copy_with_aspect(document, aspect) for document in documents
@@ -186,23 +282,51 @@ def expand_context(state: RAGState) -> RAGState:
 
 
 def rerank_documents(state: RAGState) -> RAGState:
-    aspect_documents = {
-        aspect: [
-            _copy_with_aspect(document, aspect)
-            for document in resolve_evidence_units(
-                cross_encoder_rerank(
-                    aspect,
-                    documents,
-                    intent=f"{state.get('intent', '')} {aspect}",
-                    limit=6,
-                ),
-                limit=3,
+    standalone = state["standalone_question"]
+    aspect_documents: dict[str, list[RetrievedDocument]] = {}
+    compressed_views = {}
+    complete_procedure = "procedure" in state.get("required_output", [])
+    for aspect, documents in state.get("aspect_documents", {}).items():
+        resolved = resolve_evidence_units(
+            cross_encoder_rerank(
+                f"{standalone}\nRequired aspect: {aspect}",
+                documents,
+                intent=f"{state.get('intent', '')} {aspect}",
+                limit=6,
+            ),
+            limit=3,
+        )
+        compressed = [
+            _with_compressed_view(
+                _copy_with_aspect(document, aspect),
+                aspect,
+                standalone,
+                state.get("canonical_terms", []),
+                include_complete_procedure=complete_procedure,
             )
+            for document in resolved
         ]
-        for aspect, documents in state.get("aspect_documents", {}).items()
+        aspect_documents[aspect] = compressed
+        compressed_views[aspect] = [
+            document["metadata"]["compressed_views"][aspect]
+            for document in compressed
+        ]
+    documents = _merge_aspect_documents(
+        aspect_documents, limit=MAX_EVIDENCE_SOURCES
+    )
+    for aspect, aspect_results in aspect_documents.items():
+        logger.info(
+            "aspect_rerank standalone=%r aspect=%r sections=%s evidence_ids=%s",
+            standalone,
+            aspect,
+            _section_names(aspect_results),
+            _evidence_ids(aspect_results),
+        )
+    return {
+        "aspect_documents": aspect_documents,
+        "compressed_views": compressed_views,
+        "reranked_docs": documents,
     }
-    documents = _merge_aspect_documents(aspect_documents, limit=10)
-    return {"aspect_documents": aspect_documents, "reranked_docs": documents}
 
 
 def grade_evidence(state: RAGState) -> RAGState:
@@ -210,6 +334,19 @@ def grade_evidence(state: RAGState) -> RAGState:
     reasons: list[str] = []
     missing_concepts: list[str] = []
     aspects = state.get("required_aspects") or [state["standalone_question"]]
+    domain_status = state.get("domain_status") or _domain_context(
+        state["standalone_question"]
+    )["domain_status"]
+    if domain_status == "out_of_scope":
+        return {
+            "evidence_status": "out_of_scope",
+            "evidence_reason": "The request is clearly unrelated to Opcenter.",
+            "missing_concepts": [],
+            "coverage": {aspect: "out_of_scope" for aspect in aspects},
+            "missing_aspects": list(aspects),
+            "partial_aspects": [],
+            "manual_coverage": {},
+        }
     for aspect in aspects:
         documents = state.get("aspect_documents", {}).get(aspect, [])
         if not documents and len(aspects) == 1:
@@ -243,23 +380,30 @@ def grade_evidence(state: RAGState) -> RAGState:
         status = grade.status
         if status == "retry" and state.get("retry_count", 0) >= settings.max_retries:
             status = "in_scope_insufficient"
-        if status == "out_of_scope" and _looks_in_scope(
-            state["standalone_question"], state.get("entities", [])
-        ):
-            status = "in_scope_insufficient"
+        if status == "out_of_scope" and domain_status == "in_scope":
+            status = (
+                "retry"
+                if state.get("retry_count", 0) < settings.max_retries
+                else "in_scope_insufficient"
+            )
         coverage[aspect] = status
         reasons.append(f"{aspect}: {grade.reason}")
         missing_concepts.extend(grade.missing_concepts)
+    partial_aspects = [
+        aspect for aspect, status in coverage.items() if status == "partial"
+    ]
     missing_aspects = [
-        aspect for aspect, status in coverage.items() if status != "sufficient"
+        aspect
+        for aspect, status in coverage.items()
+        if status in {"retry", "in_scope_insufficient", "out_of_scope"}
     ]
     statuses = set(coverage.values())
-    if statuses == {"out_of_scope"}:
-        overall = "out_of_scope"
+    if statuses == {"sufficient"}:
+        overall = "sufficient"
     elif "retry" in statuses and state.get("retry_count", 0) < settings.max_retries:
         overall = "retry"
     elif "sufficient" in statuses or "partial" in statuses:
-        overall = "partial" if missing_aspects else "sufficient"
+        overall = "partial"
     else:
         overall = "in_scope_insufficient"
     required_manuals = state.get("required_manuals", []) or _required_manuals(
@@ -280,6 +424,7 @@ def grade_evidence(state: RAGState) -> RAGState:
         "missing_concepts": list(dict.fromkeys(missing_concepts)),
         "coverage": coverage,
         "missing_aspects": missing_aspects,
+        "partial_aspects": partial_aspects,
         "manual_coverage": manual_coverage,
     }
 
@@ -344,13 +489,19 @@ def generate_answer(state: RAGState) -> RAGState:
         return generate_fallback(state)
     coverage = state.get("coverage", {})
     supported_aspects = [
-        aspect for aspect, status in coverage.items() if status in {"sufficient", "partial"}
-    ] or state.get("required_aspects", [])
+        aspect for aspect, status in coverage.items() if status == "sufficient"
+    ]
+    partial_aspects = state.get("partial_aspects", []) or [
+        aspect for aspect, status in coverage.items() if status == "partial"
+    ]
+    answerable_aspects = _unique_text([*supported_aspects, *partial_aspects]) or state.get(
+        "required_aspects", []
+    )
     required_manuals = state.get("required_manuals", []) or _required_manuals(
         state["standalone_question"]
     )
     documents = _select_answer_documents(
-        documents, supported_aspects, required_manuals=required_manuals
+        documents, answerable_aspects, required_manuals=required_manuals
     )
     required_output = state.get("required_output", [])
     evidence = _format_answer_evidence(
@@ -366,6 +517,7 @@ def generate_answer(state: RAGState) -> RAGState:
                 _answer_output_labels(required_output, documents, required_manuals)
             ),
             supported_aspects=" | ".join(supported_aspects) or "none",
+            partial_aspects=" | ".join(partial_aspects) or "none",
             missing_aspects=" | ".join(state.get("missing_aspects", [])) or "none",
             evidence=evidence,
             answer_structure="\n".join(
@@ -419,7 +571,10 @@ def verify_answer(state: RAGState) -> RAGState:
     )
     prompt = _trim_to_token_budget(
         ANSWER_VERIFICATION_PROMPT.format(
+            standalone_question=state.get("standalone_question", ""),
             required_aspects=" | ".join(state.get("required_aspects", [])),
+            partial_aspects=" | ".join(state.get("partial_aspects", [])) or "none",
+            missing_aspects=" | ".join(state.get("missing_aspects", [])) or "none",
             answer_structure=" | ".join(
                 _answer_structure(
                     state.get("standalone_question", ""), state.get("required_output", [])
@@ -562,7 +717,8 @@ def _format_messages(messages: list[Any]) -> str:
 
 def _deterministic_plan(question: str) -> QueryPlan:
     lowered = question.casefold()
-    if re.search(r"\b(?:how do|how to|steps?|procedure)\b", lowered):
+    domain = _domain_context(question)
+    if re.search(r"\b(?:how do|how to|procedure|steps to|step-by-step)\b", lowered):
         intent = "procedure"
     elif re.search(r"\b(?:compare|difference|versus|vs\.?\b)", lowered):
         intent = "comparison"
@@ -574,18 +730,61 @@ def _deterministic_plan(question: str) -> QueryPlan:
         [
             *re.findall(r"\b(?:[A-Z]{2,}|[A-Z][A-Za-z]+)\b", question),
             *(term.upper() if term in {"cdo", "clf"} else term.title() for term in OPCENTER_TERMS if term in lowered),
+            *domain["canonical_terms"],
         ]
     )[:8]
     outputs = _required_output(question, [], intent)
     return QueryPlan(
         standalone_question=question,
         intent=intent,
-        required_aspects=[question],
+        complexity="multi_aspect" if "?" in question.rstrip("?") else "single_topic",
+        required_aspects=_fallback_aspects(question, domain["canonical_terms"]),
         required_output=outputs,
         entities=entities,
-        search_queries=[question],
+        search_queries=_unique_text([question, *domain["canonical_terms"]])[:4],
+        exact_phrases=domain["aliases"],
+        canonical_terms=domain["canonical_terms"],
+        aliases=domain["aliases"],
+        manual_hints=domain["manual_hints"],
+        preferred_manuals=domain["manual_hints"],
         needs_diagram="diagram" in outputs,
     )
+
+
+def _fallback_aspects(question: str, canonical_terms: list[str]) -> list[str]:
+    concepts = set(canonical_terms)
+    field_aspects = [
+        concept
+        for concept in ("Scalar Field", "List Field", "Validate Event")
+        if concept in concepts
+    ]
+    if len(field_aspects) > 1:
+        return field_aspects
+    if "Portal Studio Control" in concepts and (
+        concepts.intersection({"Role", "Permission", "Security Server", "SSL"})
+        or re.search(r"\bsecurity\b", question, re.I)
+    ):
+        return ["Portal Studio controls", "security configuration"]
+    if {"Spec", "Resource Group", "Resource"}.issubset(concepts):
+        return ["Spec, Resource Group, and Resource relationship"]
+    if {"Role", "Permission", "Security Server"}.issubset(concepts):
+        return [
+            "Role and Permission configuration",
+            "Security Server and SSL configuration",
+        ]
+    if {"Role", "Permission"}.issubset(concepts):
+        return ["Role and Permission configuration"]
+    if "Numbering Rule" in concepts:
+        return ["Numbering Rule and Container identifiers"]
+    if "Validate Event" in concepts:
+        return ["Validate Event and field value acceptance"]
+    if "Factory Hierarchy" in concepts:
+        return ["Physical Modeling Sequence and Factory Hierarchy"]
+    if "Recipe Pattern" in concepts:
+        return ["Recipe Pattern"]
+    if "Portal Studio Control" in concepts:
+        return ["Portal Studio controls"]
+    return [question]
 
 
 def _heuristic_grade(
@@ -595,18 +794,112 @@ def _heuristic_grade(
 ) -> EvidenceGrade:
     if not _looks_in_scope(state["standalone_question"], state.get("entities", [])):
         return EvidenceGrade(status="out_of_scope", reason="The request is unrelated to Opcenter.")
-    terms = set(_content_terms(f"{state['standalone_question']} {aspect}"))
-    evidence_text = " ".join(
-        f"{document['metadata'].get('section', '')} {document['text'][:600]}"
-        for document in documents[:2]
+    weak_status = (
+        "retry"
+        if state.get("retry_count", 0) < settings.max_retries
+        else "in_scope_insufficient"
     )
-    overlap = terms & set(_content_terms(evidence_text))
-    if len(overlap) >= min(2, max(1, len(terms))):
-        return EvidenceGrade(status="sufficient", reason="Retrieved evidence matches the assigned aspect.")
-    if overlap:
-        return EvidenceGrade(status="partial", reason="Retrieved evidence partially matches the assigned aspect.")
-    status = "retry" if state.get("retry_count", 0) < settings.max_retries else "in_scope_insufficient"
-    return EvidenceGrade(status=status, reason="Retrieved evidence does not match the assigned aspect closely enough.")
+    question = state["standalone_question"]
+    aspect_text = " ".join(aspect.casefold().split())
+    aspect_terms = set(_content_terms(aspect))
+    sections = " ".join(
+        str(document["metadata"].get("section", "")) for document in documents
+    ).casefold()
+    evidence = " ".join(document["text"][:800] for document in documents).casefold()
+    combined = f"{sections} {evidence}"
+    evidence_terms = set(_content_terms(combined))
+    section_overlap = aspect_terms & set(_content_terms(sections))
+    evidence_overlap = aspect_terms & evidence_terms
+    content_types = {document["content_type"] for document in documents}
+    relevant_canonical = [
+        term
+        for term in state.get("canonical_terms", [])
+        if aspect_terms & set(_content_terms(term))
+        or (
+            "security" in aspect_terms
+            and term in {"Role", "Permission", "Employee", "Security Server", "SSL"}
+        )
+    ]
+    canonical_hits = [
+        term
+        for term in relevant_canonical
+        if " ".join(term.casefold().split()) in combined
+    ]
+    exact_aspect = aspect_text in combined
+    event_requested = "event" in aspect_terms
+    procedure_requested = bool(
+        re.search(r"\b(?:how do|how to|procedure|steps to|step-by-step)\b", question, re.I)
+    )
+    definition_requested = bool(
+        re.search(r"\b(?:what is|what are|define|definition|difference)\b", question, re.I)
+    )
+    field_or_table_requested = bool(aspect_terms & {"field", "fields", "table"})
+    definition_language = bool(
+        re.search(r"\b(?:means|represents|is defined as|defines|consists of|refers to)\b", evidence)
+    )
+
+    if event_requested:
+        if not exact_aspect or "event" not in evidence_terms:
+            return EvidenceGrade(
+                status=weak_status,
+                reason="Evidence is related but does not directly establish the requested event.",
+            )
+        if section_overlap and (definition_language or "event" in sections):
+            return EvidenceGrade(status="sufficient", reason="Event-specific evidence directly matches the aspect.")
+        return EvidenceGrade(status="partial", reason="The event is identified but its requested behavior is incomplete.")
+
+    if "control" in aspect_terms and "control" not in evidence_terms:
+        return EvidenceGrade(
+            status=weak_status,
+            reason="Page or web-part evidence does not directly define the requested controls.",
+        )
+
+    if "list field" in aspect_text and "object reference" in combined and not re.search(
+        r"\b(?:all list fields|list field types|scalar list)\b", combined
+    ):
+        return EvidenceGrade(
+            status="partial",
+            reason="Object-reference list-field evidence cannot define all list-field types.",
+        )
+
+    if procedure_requested:
+        if "procedure" in content_types and evidence_overlap:
+            return EvidenceGrade(status="sufficient", reason="Procedure evidence directly matches the aspect.")
+        return EvidenceGrade(
+            status=weak_status,
+            reason="Related evidence does not provide the requested procedure.",
+        )
+
+    if field_or_table_requested and content_types.intersection({"field_definition", "table"}):
+        if exact_aspect or section_overlap or canonical_hits:
+            return EvidenceGrade(status="sufficient", reason="Structured field evidence directly matches the aspect.")
+
+    if definition_requested:
+        if (exact_aspect or canonical_hits) and definition_language and section_overlap:
+            return EvidenceGrade(status="sufficient", reason="Definition evidence directly matches the aspect.")
+        if exact_aspect or canonical_hits or len(evidence_overlap) >= max(1, len(aspect_terms) - 1):
+            return EvidenceGrade(
+                status="partial",
+                reason="The concept is present, but the requested definition or distinction is incomplete.",
+            )
+        return EvidenceGrade(
+            status=weak_status,
+            reason="Evidence is related but does not define the assigned aspect.",
+        )
+
+    if exact_aspect and section_overlap and len(evidence_overlap) >= max(1, len(aspect_terms) // 2):
+        return EvidenceGrade(status="sufficient", reason="Section and aspect-specific evidence directly match.")
+    if "security" in aspect_terms and canonical_hits:
+        return EvidenceGrade(
+            status="partial",
+            reason="A security component is supported, but the broader security model is incomplete.",
+        )
+    if exact_aspect or canonical_hits:
+        return EvidenceGrade(status="partial", reason="Evidence directly supports only part of the aspect.")
+    return EvidenceGrade(
+        status=weak_status,
+        reason="Evidence is related but does not directly answer the assigned aspect.",
+    )
 
 
 def _relevant_messages(messages: list[Any], question: str) -> list[Any]:
@@ -692,6 +985,23 @@ def _ensure_queries(
 def _required_aspects(question: str, aspects: list[str]) -> list[str]:
     if _is_sampling_movement_question(question):
         return list(SAMPLING_REQUIRED_ASPECTS)
+    text = question.casefold()
+    model_types = bool(re.search(r"\b(?:types? of models?|models? (?:are )?used)\b", text))
+    hierarchy = bool(re.search(r"\b(?:hierarch\w*|sequence|structure)\b", text))
+    if model_types and hierarchy:
+        return [
+            "model types",
+            "relationship between models",
+            "physical modeling hierarchy",
+        ]
+    if model_types:
+        return ["model types", "relationship between models"]
+    if hierarchy and re.search(r"\bphysical modell?(?:ing)?\b", text):
+        return ["physical modeling hierarchy"]
+    if _contains_alias(question, "Electronic Signatures") and (
+        not aspects or all("electronic signature" in aspect.casefold() for aspect in aspects)
+    ):
+        return ["Electronic Signatures"]
     unique = list(
         dict.fromkeys(
             cleaned
@@ -702,10 +1012,40 @@ def _required_aspects(question: str, aspects: list[str]) -> list[str]:
     return unique or [question]
 
 
-def _aspect_queries(aspect: str, queries: list[str], entities: list[str]) -> list[str]:
-    candidates = [aspect, *queries]
-    candidates.extend(f"{aspect} {entity}" for entity in entities[:2])
-    return _unique_text(candidates)[:3]
+def _aspect_queries(
+    aspect: str,
+    planner_queries: list[str],
+    canonical_terms: list[str],
+    *,
+    multiple_aspects: bool = False,
+) -> list[str]:
+    aspect_terms = set(_content_terms(aspect))
+    specific_terms = aspect_terms - {
+        "configuration", "event", "events", "field", "fields", "model", "models"
+    }
+    match_terms = specific_terms or aspect_terms
+
+    def related(values: list[str], *, require_overlap: bool) -> list[str]:
+        ranked = sorted(
+            enumerate(values),
+            key=lambda item: (
+                len(match_terms & set(_content_terms(item[1]))),
+                -item[0],
+            ),
+            reverse=True,
+        )
+        return [
+            value
+            for _, value in ranked
+            if not require_overlap or match_terms & set(_content_terms(value))
+        ]
+
+    candidates = [
+        aspect,
+        *related(planner_queries, require_overlap=multiple_aspects),
+        *related(canonical_terms, require_overlap=multiple_aspects),
+    ]
+    return _unique_text(candidates)[:4]
 
 
 def _required_output(question: str, outputs: list[str], intent: str) -> list[str]:
@@ -717,7 +1057,7 @@ def _required_output(question: str, outputs: list[str], intent: str) -> list[str
         required.extend(["likely_reasons", "checks"])
     if re.search(r"\b(?:compare|comparison|difference|versus|vs\.? )\b", text):
         required.append("comparison_table")
-    if re.search(r"\b(?:steps?|procedure|how do|how to)\b", text):
+    if re.search(r"\b(?:procedure|how do|how to|steps to|step-by-step)\b", text):
         required.append("procedure")
     if DIAGRAM_RE.search(text) or re.search(r"\bmodeled\b.*\bbecomes? usable\b", text):
         required.append("diagram")
@@ -849,7 +1189,54 @@ def _copy_with_aspect(document: RetrievedDocument, aspect: str) -> RetrievedDocu
     copied["metadata"]["aspects"] = list(
         dict.fromkeys([*copied["metadata"].get("aspects", []), aspect])
     )
+    copied["metadata"]["compressed_views"] = dict(
+        copied["metadata"].get("compressed_views", {})
+    )
     return copied
+
+
+def _with_compressed_view(
+    document: RetrievedDocument,
+    aspect: str,
+    question: str,
+    canonical_terms: list[str],
+    *,
+    include_complete_procedure: bool,
+) -> RetrievedDocument:
+    copied = _copy_with_aspect(document, aspect)
+    copied["metadata"]["compressed_views"][aspect] = compress_evidence(
+        copied,
+        aspect,
+        question,
+        canonical_terms=canonical_terms,
+        include_complete_procedure=include_complete_procedure,
+        max_characters=700,
+    )
+    return copied
+
+
+def _merge_document_details(
+    existing: RetrievedDocument, candidate: RetrievedDocument
+) -> None:
+    for key in ("aspects", "matched_representation_types", "selected_candidate_ids"):
+        existing["metadata"][key] = list(
+            dict.fromkeys(
+                [
+                    *existing["metadata"].get(key, []),
+                    *candidate["metadata"].get(key, []),
+                ]
+            )
+        )
+    existing_views = existing["metadata"].setdefault("compressed_views", {})
+    existing_views.update(candidate["metadata"].get("compressed_views", {}))
+    for name, value in candidate["retrieval_scores"].items():
+        current = existing["retrieval_scores"].get(name)
+        if current is None:
+            existing["retrieval_scores"][name] = value
+        elif "rank" in name or "distance" in name:
+            existing["retrieval_scores"][name] = min(current, value)
+        else:
+            existing["retrieval_scores"][name] = max(current, value)
 
 
 def _merge_aspect_documents(
@@ -857,18 +1244,24 @@ def _merge_aspect_documents(
 ) -> list[RetrievedDocument]:
     """Round-robin aspect evidence so one topic cannot crowd out the others."""
     merged: list[RetrievedDocument] = []
+    by_evidence_id: dict[str, RetrievedDocument] = {}
     depth = 0
     while len(merged) < limit:
-        added = False
+        examined = False
         for aspect, documents in aspect_documents.items():
             if depth >= len(documents):
                 continue
-            merged.append(_copy_with_aspect(documents[depth], aspect))
-            merged = deduplicate_results(merged, intent=aspect)
-            added = True
+            examined = True
+            candidate = _copy_with_aspect(documents[depth], aspect)
+            evidence_id = _evidence_id(candidate)
+            if evidence_id in by_evidence_id:
+                _merge_document_details(by_evidence_id[evidence_id], candidate)
+            else:
+                merged.append(candidate)
+                by_evidence_id[evidence_id] = candidate
             if len(merged) >= limit:
                 break
-        if not added:
+        if not examined:
             break
         depth += 1
     return merged[:limit]
@@ -879,6 +1272,22 @@ def _manual_preferences(filters: dict[str, str | list[str]]) -> list[str]:
     for value in filters.values():
         values.extend(value if isinstance(value, list) else [value])
     return [value for value in values if value]
+
+
+def _relevant_retrieval_terms(
+    aspect: str, queries: list[str], terms: list[str]
+) -> list[str]:
+    reference = set(_content_terms(" ".join([aspect, *queries])))
+    ranked = sorted(
+        (
+            (len(reference.intersection(_content_terms(term))), index, term)
+            for index, term in enumerate(terms)
+            if term.strip()
+        ),
+        key=lambda item: (item[0], -item[1]),
+        reverse=True,
+    )
+    return [term for overlap, _, term in ranked if overlap][:8]
 
 
 def _content_terms(text: str) -> list[str]:
@@ -947,16 +1356,35 @@ def _table_excerpt(rows: list[list[Any]], query: str, *, max_rows: int = 6) -> s
 
 
 def _grader_text(document: RetrievedDocument, aspect: str) -> str:
-    rows = document["metadata"].get("table_rows")
-    source = _table_excerpt(rows, aspect, max_rows=3) if rows else document["text"]
-    return _relevant_excerpt(source, aspect, maximum=GRADER_EXCERPT_CHARS)
+    view = document["metadata"].get("compressed_views", {}).get(aspect)
+    if view is None:
+        view = compress_evidence(
+            document,
+            aspect,
+            aspect,
+            max_characters=GRADER_EXCERPT_CHARS,
+        )
+    return _truncate_evidence(
+        str(view.get("compressed_text", "")), GRADER_EXCERPT_CHARS
+    )
 
 
 def _format_grader_summaries(
     documents: list[RetrievedDocument], aspect: str
 ) -> str:
     summaries: list[str] = []
-    for index, document in enumerate(_unique_evidence_documents(documents)[:2], start=1):
+    aspect_terms = set(_content_terms(aspect))
+    ranked = sorted(
+        enumerate(_unique_evidence_documents(documents)),
+        key=lambda item: (
+            len(aspect_terms & set(_content_terms(
+                f"{item[1]['metadata'].get('section', '')} {item[1]['text']}"
+            ))),
+            -item[0],
+        ),
+        reverse=True,
+    )
+    for index, (_, document) in enumerate(ranked[:2], start=1):
         metadata = document["metadata"]
         scores = " ".join(
             f"{name}={value:.4g}"
@@ -1029,22 +1457,45 @@ def _select_answer_documents(
     for document in unique:
         if document not in selected:
             selected.append(document)
-        if len(selected) == 10:
+        if len(selected) == MAX_EVIDENCE_SOURCES:
             break
-    return selected[:10]
+    return selected[:MAX_EVIDENCE_SOURCES]
 
 
 def _answer_content(
     document: RetrievedDocument, query: str, include_complete_procedure: bool
 ) -> str:
-    rows = document["metadata"].get("table_rows")
-    if rows:
-        return _table_excerpt(rows, query)
     if include_complete_procedure and document["content_type"] == "procedure":
-        return document["text"]
-    return _relevant_excerpt(
-        document["text"], query, minimum=500, maximum=ANSWER_EXCERPT_CHARS
-    )
+        return compress_evidence(
+            document,
+            query,
+            query,
+            include_complete_procedure=True,
+            max_characters=700,
+        )["compressed_text"]
+    views = list(document["metadata"].get("compressed_views", {}).values())
+    query_terms = set(_content_terms(query))
+    if views:
+        view = max(
+            views,
+            key=lambda item: len(
+                query_terms
+                & set(
+                    _content_terms(
+                        f"{item.get('aspect', '')} {item.get('compressed_text', '')}"
+                    )
+                )
+            ),
+        )
+    else:
+        view = compress_evidence(
+            document,
+            query,
+            query,
+            include_complete_procedure=include_complete_procedure,
+            max_characters=700,
+        )
+    return str(view.get("compressed_text", ""))
 
 
 def _format_answer_evidence(
@@ -1057,7 +1508,7 @@ def _format_answer_evidence(
     complete_procedures = "procedure" in required_output
     entries: list[tuple[str, str, bool]] = []
     procedure_count = 0
-    for index, document in enumerate(documents[:10], start=1):
+    for index, document in enumerate(documents[:MAX_EVIDENCE_SOURCES], start=1):
         metadata = document["metadata"]
         protected = (
             complete_procedures
@@ -1108,12 +1559,16 @@ def _format_cited_evidence(
 ) -> str:
     if not cited_numbers:
         return "No cited EvidenceUnits."
-    per_source = max(160, max_chars // len(cited_numbers) - 160)
+    per_source = max(320, max_chars // len(cited_numbers) - 160)
     entries: list[str] = []
     for number in cited_numbers:
         document = documents[number - 1]
         metadata = document["metadata"]
-        content = _answer_content(document, query, False)
+        compressed = _answer_content(document, query, False)
+        original = _relevant_excerpt(
+            document["text"], query, minimum=180, maximum=max(220, per_source // 2)
+        )
+        content = f"Compressed view:\n{compressed}\n\nOriginal context:\n{original}"
         entries.append(
             f"[S{number}] evidence_id={_evidence_id(document)} | manual={metadata.get('manual', 'Manual')} | "
             f"section={metadata.get('section', '')} | type={document['content_type']}\n"
@@ -1223,9 +1678,176 @@ def _section_names(documents: list[RetrievedDocument]) -> list[str]:
     )
 
 
+def _matched_values(documents: list[RetrievedDocument], key: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            str(document["metadata"].get(key, ""))
+            for document in documents
+            if document["metadata"].get(key)
+        )
+    )[:8]
+
+
+def _evidence_ids(documents: list[RetrievedDocument]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            str(document["metadata"].get("evidence_id", ""))
+            for document in documents
+            if document["metadata"].get("evidence_id")
+        )
+    )
+
+
 def _looks_in_scope(question: str, entities: list[str]) -> bool:
-    text = f"{question} {' '.join(entities)}".casefold()
-    return any(term in text for term in OPCENTER_TERMS)
+    return _domain_context(f"{question} {' '.join(entities)}")["domain_status"] == "in_scope"
+
+
+def _contains_alias(text: str, canonical: str) -> bool:
+    lowered = text.casefold()
+    entry = _concept_catalog().get(canonical, {})
+    return any(
+        re.search(rf"(?<!\w){re.escape(alias.casefold())}(?!\w)", lowered)
+        for alias in entry.get("aliases", [])
+    )
+
+
+@lru_cache(maxsize=1)
+def _concept_catalog() -> dict[str, dict[str, list[str]]]:
+    catalog = {
+        canonical: {
+            "aliases": _unique_text([canonical, *aliases]),
+            "manual_hints": [],
+        }
+        for canonical, aliases in DOMAIN_CONCEPTS.items()
+    }
+    try:
+        raw = json.loads(ALIAS_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("root must be an object")
+        for canonical, entry in raw.items():
+            if not isinstance(canonical, str) or not isinstance(entry, dict):
+                raise ValueError("concept entries must be objects")
+            aliases = entry.get("aliases", [])
+            hints = entry.get("manual_hints", [])
+            if not isinstance(aliases, list) or not all(isinstance(item, str) for item in aliases):
+                raise ValueError(f"{canonical}.aliases must be a string list")
+            if not isinstance(hints, list) or not all(isinstance(item, str) for item in hints):
+                raise ValueError(f"{canonical}.manual_hints must be a string list")
+            current = catalog.setdefault(canonical, {"aliases": [], "manual_hints": []})
+            current["aliases"] = _unique_text([canonical, *current["aliases"], *aliases])
+            current["manual_hints"] = _unique_text([*current["manual_hints"], *hints])
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Could not load Opcenter aliases from %s: %s", ALIAS_CONFIG_PATH, exc)
+    return catalog
+
+
+def _catalog_details(canonical_terms: list[str]) -> tuple[list[str], list[str], list[str]]:
+    by_name = {name.casefold(): (name, entry) for name, entry in _concept_catalog().items()}
+    known: list[str] = []
+    aliases: list[str] = []
+    manual_hints: list[str] = []
+    for term in canonical_terms:
+        match = by_name.get(term.casefold())
+        if not match:
+            continue
+        canonical, entry = match
+        known.append(canonical)
+        aliases.extend(entry["aliases"])
+        manual_hints.extend(entry["manual_hints"])
+    return _unique_text(known), _unique_text(aliases), _unique_text(manual_hints)
+
+
+def _merge_plan_domain(question: str, domain: dict[str, Any], plan: QueryPlan) -> dict[str, Any]:
+    canonical_terms = _unique_text([*plan.canonical_terms, *domain["canonical_terms"]])
+    known, catalog_aliases, catalog_hints = _catalog_details(canonical_terms)
+    aliases = _unique_text([*plan.aliases, *domain["aliases"], *catalog_aliases])
+    manual_hints = _unique_text([
+        *plan.manual_hints,
+        *domain["manual_hints"],
+        *catalog_hints,
+    ])
+    if re.search(r"\b(?:architecture|overview|introduction|getting started)\b", question, re.I):
+        manual_hints = _unique_text([*manual_hints, "Getting Started"])
+    return {
+        **domain,
+        "domain_status": "in_scope" if known else domain["domain_status"],
+        "canonical_terms": canonical_terms,
+        "aliases": aliases,
+        "manual_hints": manual_hints,
+    }
+
+
+def _domain_context(question: str) -> dict[str, Any]:
+    lowered = question.casefold()
+    matches = [
+        (canonical, alias)
+        for canonical, entry in _concept_catalog().items()
+        for alias in entry["aliases"]
+        if re.search(rf"(?<!\w){re.escape(alias.casefold())}(?!\w)", lowered)
+    ]
+    canonical_terms = _unique_text([canonical for canonical, _ in matches])
+    aliases = _unique_text([alias for _, alias in matches])
+    if (
+        re.search(r"\b(?:unique|automatic\w*)\b.*\b(?:numbers?|identifiers?)\b", lowered)
+        and "container" in lowered
+    ):
+        canonical_terms = _unique_text([*canonical_terms, "Numbering Rule", "Container"])
+    if re.search(r"\bsecur(?:ity|e)\b.*\b(?:configur\w*|model|access)\b", lowered):
+        canonical_terms = _unique_text([
+            *canonical_terms,
+            "Role",
+            "Permission",
+            "Security Server",
+            "SSL",
+        ])
+    if re.search(r"\b(?:types? of models?|models? (?:are )?used)\b", lowered) and any(
+        term in canonical_terms for term in ("Opcenter Execution Core", "Physical Model")
+    ):
+        canonical_terms = _unique_text([
+            *canonical_terms,
+            "Information Model",
+            "Physical Model",
+            "Process Model",
+            "Execution Model",
+        ])
+    if re.search(
+        r"\b(?:physical modell?(?:ing)? (?:hierarch\w*|sequence|structure)|"
+        r"(?:hierarch\w*|sequence|structure) of physical modell?(?:ing)?)\b",
+        lowered,
+    ):
+        canonical_terms = _unique_text([
+            *canonical_terms,
+            "Physical Modeling Sequence",
+            "Factory Hierarchy",
+            "Enterprise",
+            "Factory",
+            "Location",
+            "Resource",
+        ])
+    known, _, catalog_hints = _catalog_details(canonical_terms)
+    canonical_terms = _unique_text([*canonical_terms, *known])
+    clearly_unrelated = bool(CLEARLY_UNRELATED_RE.search(question)) and not canonical_terms
+    modeling_concepts = {
+        "Electronic Signatures", "Physical Modeling Sequence", "Factory Hierarchy",
+        "Physical Model", "Factory", "Location", "Resource", "Workflow", "Spec",
+    }
+    manual_hints = list(catalog_hints)
+    if modeling_concepts.intersection(canonical_terms):
+        manual_hints.append("Modeling")
+    if re.search(r"\b(?:move transaction|container transaction|collect sampling data)\b", lowered):
+        manual_hints.append("Shop Floor")
+    if re.search(r"\b(?:installation components?|security server|ssl|tls)\b", lowered):
+        manual_hints.append("Installation")
+    if re.search(r"\b(?:portal studio|web parts?|portal controls?)\b", lowered):
+        manual_hints.append("Portal Studio")
+    manual_hints = _unique_text(manual_hints)
+    return {
+        "domain_status": "out_of_scope" if clearly_unrelated else "in_scope",
+        "domain_terms": aliases,
+        "canonical_terms": canonical_terms,
+        "aliases": aliases,
+        "manual_hints": manual_hints,
+    }
 
 
 def _remove_invalid_citations(answer: str, evidence_count: int) -> str:
@@ -1237,6 +1859,7 @@ def _remove_invalid_citations(answer: str, evidence_count: int) -> str:
 
 def _normalize_citations(answer: str) -> str:
     """Convert grouped citations like [S1, S3] into independently valid IDs."""
+    answer = DECORATIVE_CITATION_RE.sub(lambda match: f"[{match.group(1)}]", answer)
     return GROUPED_CITATION_RE.sub(
         lambda match: " ".join(
             f"[{source_id.upper()}]"

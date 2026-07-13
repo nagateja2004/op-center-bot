@@ -8,7 +8,7 @@ SQLite-backed LangGraph conversation memory.
 The ingestion and runtime paths are text-only. Images are not extracted, OCRed,
 described, embedded, or displayed.
 
-The current document/index schema is **version 4**. Application startup validates
+The current document/index schema is **version 8**. Application startup validates
 the schema and ID alignment but never deletes or rebuilds existing indexes.
 
 ## Architecture
@@ -20,8 +20,12 @@ manuals/*.pdf
     -> 150-220 word RetrievalSegments validated with the all-MiniLM-L6-v2 tokenizer
     -> indexes/evidence_units.json
        indexes/retrieval_segments.json
+       indexes/search_representations.json
+       indexes/heading_index.json
+       indexes/concept_index.json
+       indexes/ingestion_audit.json
        indexes/bm25.pkl
-       indexes/chroma/ (collection: opcenter_manuals)
+       indexes/chroma/ (retrieval-segment and search-representation collections)
 
 Streamlit question
     -> understand_question (latest 6 messages)
@@ -125,16 +129,21 @@ This creates or updates:
   structured table JSON, ordered procedure steps, and attached notes/warnings
 - `indexes/retrieval_segments.json` - searchable children with EvidenceUnit IDs,
   150-220 word targets, and embedding-token counts
+- `indexes/search_representations.json` - compact definition, procedure, table,
+  heading, and concept representations used for semantic search
+- `indexes/heading_index.json` - normalized manual heading lookup records
+- `indexes/concept_index.json` - canonical concepts, aliases, and evidence links
+- `indexes/ingestion_audit.json` - per-manual extraction and exclusion counts
 - `indexes/manifest.json` - PDF SHA-256 hashes and index counts
 - `indexes/bm25.pkl` - BM25 object and ordered RetrievalSegment IDs
-- `indexes/chroma/` - persistent `opcenter_manuals` collection
+- `indexes/chroma/` - persistent retrieval-segment and representation collections
 
 Only RetrievalSegments are indexed. Unchanged PDF hashes reuse both stored levels
 and do not rebuild Chroma or BM25. The command validates segment-to-evidence links,
 tokenizer limits, duplicate IDs, and matching RetrievalSegment ID sets across
 Chroma, BM25, and `retrieval_segments.json`.
 
-After the schema-4 rebuild, start the application normally:
+After the schema-8 rebuild, start the application normally:
 
 ```bash
 streamlit run app.py
@@ -170,6 +179,11 @@ Docker Compose:
 docker compose up --build
 ```
 
+Compose mounts `.env` read-only at `/app/.env`; it does not copy secrets into the
+image or inject them into Docker's inspectable container environment.
+Set `APP_PORT` when port 8501 is already in use, for example
+`APP_PORT=8502 docker compose up --build`.
+
 Stop:
 
 ```bash
@@ -190,9 +204,9 @@ docker compose up
 ```
 
 Place proprietary PDF manuals in `manuals/`; they are bind-mounted and excluded
-from Git and the image. Generated Chroma, BM25, EvidenceUnit, and RetrievalSegment
-artifacts persist under `indexes/`. LangGraph conversation memory persists at
-`data/chat_memory.sqlite`.
+from Git and the image. Generated Chroma, BM25, evidence, representation, heading,
+concept, and audit artifacts persist under `indexes/`. LangGraph conversation
+memory persists at `data/chat_memory.sqlite`.
 
 Run ingestion before the UI when indexes are absent or stale:
 

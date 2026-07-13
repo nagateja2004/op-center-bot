@@ -25,3 +25,7 @@ indexes/bm25.pkl
 indexes/evidence_units.json
 indexes/retrieval_segments.json
 indexes/manifest.json
+indexes/heading_index.json
+indexes/concept_index.json
+indexes/ingestion_audit.json
+indexes/search_representations.json

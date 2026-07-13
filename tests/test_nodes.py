@@ -1,3 +1,5 @@
+import pytest
+
 from langchain_core.messages import AIMessage, HumanMessage
 
 import src.nodes as nodes
@@ -49,6 +51,152 @@ def test_understand_question_uses_latest_six_messages_and_sets_diagram(monkeypat
     assert update["needs_diagram"] is True
 
 
+def test_new_question_resets_transient_checkpoint_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: QueryPlan(
+            standalone_question="Explain Defining Numbering Rules.",
+            intent="explanation",
+            search_queries=["Defining Numbering Rules"],
+        ),
+    )
+    old_document = document(99)
+    update = nodes.understand_question(
+        {
+            "messages": [
+                HumanMessage(content="Old question"),
+                AIMessage(content="Old answer"),
+                HumanMessage(content="Explain Defining Numbering Rules."),
+            ],
+            "retry_count": 1,
+            "missing_aspects": ["old aspect"],
+            "missing_concepts": ["old concept"],
+            "partial_aspects": ["old partial"],
+            "coverage": {"old aspect": "retry"},
+            "manual_coverage": {"Modeling": False},
+            "aspect_documents": {"old aspect": [old_document]},
+            "retrieved_docs": [old_document],
+            "expanded_docs": [old_document],
+            "reranked_docs": [old_document],
+            "evidence_reason": "old reason",
+            "answer": "old answer",
+            "sources": [{"source_id": "S1", "source": "old"}],
+            "grounded": True,
+            "unsupported_claims": ["old claim"],
+            "diagram_dot": "digraph old {}",
+            "diagram_supported": True,
+            "llm_error_role": "answer",
+        }
+    )
+
+    assert "messages" not in update
+    assert update["retry_count"] == 0
+    for field in (
+        "missing_aspects", "missing_concepts", "partial_aspects", "retrieved_docs",
+        "expanded_docs", "reranked_docs", "sources", "unsupported_claims",
+    ):
+        assert update[field] == []
+    for field in ("coverage", "manual_coverage", "aspect_documents"):
+        assert update[field] == {}
+    assert update["evidence_reason"] == update["answer"] == update["llm_error_role"] == ""
+    assert update["grounded"] is update["diagram_supported"] is False
+    assert update["diagram_dot"] is None
+
+
+def test_planner_queries_and_canonical_terms_reach_aspect_retrieval(monkeypatch) -> None:
+    planner_queries = ["Physical Modeling Sequence", "Factory hierarchy levels"]
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: QueryPlan(
+            standalone_question="What is the hierarchy of physical modelling?",
+            intent="explanation",
+            required_aspects=["physical modeling hierarchy"],
+            entities=["Hierarchy"],
+            search_queries=planner_queries,
+        ),
+    )
+    state = nodes.understand_question(
+        {"messages": [HumanMessage(content="What is the hierarchy of physical modelling?")]}
+    )
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        nodes,
+        "retrieve_multiple_queries",
+        lambda standalone_query, search_queries, **kwargs: (
+            calls.append((standalone_query, search_queries)) or [document(1)]
+        ),
+    )
+
+    nodes.retrieve_documents(state)
+
+    assert "Physical Modeling Sequence" in state["entities"]
+    assert calls == [
+        (
+            "What is the hierarchy of physical modelling?",
+            state["aspect_queries"]["physical modeling hierarchy"],
+        )
+    ]
+    assert set(planner_queries).issubset(calls[0][1])
+
+
+def test_multi_aspect_queries_select_relevant_planner_queries() -> None:
+    planner_queries = [
+        "scalar fields versus list fields",
+        "Validate event behavior",
+        "Defining Numbering Rules",
+    ]
+
+    field_queries = nodes._aspect_queries(
+        "scalar fields and list fields", planner_queries, [], multiple_aspects=True
+    )
+    validate_queries = nodes._aspect_queries(
+        "Validate event", planner_queries, [], multiple_aspects=True
+    )
+
+    assert "scalar fields versus list fields" in field_queries
+    assert "Validate event behavior" not in field_queries
+    assert "Validate event behavior" in validate_queries
+    assert "scalar fields versus list fields" not in validate_queries
+    assert all(len(queries) <= 4 for queries in (field_queries, validate_queries))
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Explain Defining Numbering Rules.",
+        "What is the hierarchy of physical modelling?",
+        "What types of models are used in Execution Core?",
+        "What are scalar fields and list fields? What is the Validate event?",
+    ],
+)
+def test_regression_question_is_primary_fusion_query(monkeypatch, question) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        nodes,
+        "retrieve_multiple_queries",
+        lambda standalone_query, search_queries, **kwargs: (
+            calls.append(standalone_query) or [document(len(calls))]
+        ),
+    )
+
+    update = nodes.retrieve_documents(
+        {
+            "standalone_question": question,
+            "required_aspects": ["first aspect", "second aspect"],
+            "aspect_queries": {
+                "first aspect": ["first planner query"],
+                "second aspect": ["second planner query"],
+            },
+            "retry_count": 0,
+        }
+    )
+
+    assert calls == [question, question]
+    assert set(update["aspect_documents"]) == {"first aspect", "second aspect"}
+
+
 def test_grade_does_not_treat_weak_opcenter_retrieval_as_out_of_scope(monkeypatch) -> None:
     monkeypatch.setattr(
         nodes,
@@ -66,7 +214,87 @@ def test_grade_does_not_treat_weak_opcenter_retrieval_as_out_of_scope(monkeypatc
         }
     )
 
-    assert update["evidence_status"] == "in_scope_insufficient"
+    assert update["evidence_status"] == "retry"
+
+
+def test_electronic_signatures_are_deterministically_in_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: QueryPlan(
+            standalone_question="explain electronic signatures",
+            intent="explanation",
+            required_aspects=["electronic signatures"],
+            search_queries=["electronic signatures"],
+        ),
+    )
+
+    update = nodes.understand_question(
+        {"messages": [HumanMessage(content="explain electronic signatures")]}
+    )
+
+    assert update["domain_status"] == "in_scope"
+    assert "Electronic Signatures" in update["canonical_terms"]
+    assert "Modeling" in update["manual_hints"]
+    assert update["required_aspects"] == ["Electronic Signatures"]
+    assert any(
+        "electronic signatures" in query.casefold()
+        for query in update["search_queries"]
+    )
+
+
+def test_electronic_signatures_cannot_be_downgraded_to_out_of_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: EvidenceGrade(
+            status="out_of_scope", reason="Incorrect grader decision"
+        ),
+    )
+
+    update = nodes.grade_evidence(
+        {
+            "standalone_question": "explain electronic signatures",
+            "domain_status": "in_scope",
+            "required_aspects": ["Electronic Signatures"],
+            "aspect_documents": {"Electronic Signatures": [document(1)]},
+            "retry_count": 0,
+        }
+    )
+
+    assert update["evidence_status"] == "retry"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_concept"),
+    [
+        (
+            "Tell me the hierarchy of the Execution Core and what are the types of model in Core?",
+            "Information Model",
+        ),
+        ("What is the hierarchy of physical modelling?", "Physical Modeling Sequence"),
+        ("How is a company represented from enterprise level to equipment?", "Resource"),
+        ("What types of models are used in Execution Core?", "Execution Model"),
+        ("Explain the Physical Modeling Sequence", "Physical Modeling Sequence"),
+    ],
+)
+def test_broad_modeling_questions_are_in_scope(question, expected_concept) -> None:
+    domain = nodes._domain_context(question)
+
+    assert domain["domain_status"] == "in_scope"
+    assert expected_concept in domain["canonical_terms"]
+    assert "Modeling" in domain["manual_hints"]
+
+
+def test_compound_model_hierarchy_question_is_decomposed() -> None:
+    assert nodes._required_aspects(
+        "Tell me the hierarchy of the Execution Core and what are the types of model in Core?",
+        ["the hierarchy and model types"],
+    ) == [
+        "model types",
+        "relationship between models",
+        "physical modeling hierarchy",
+    ]
 
 
 def test_empty_evidence_skips_grading_llm(monkeypatch) -> None:
@@ -109,10 +337,10 @@ def test_grade_returns_partial_when_only_one_aspect_is_supported(monkeypatch) ->
 
 
 def test_retry_retrieves_only_missing_aspects(monkeypatch) -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, list[str]]] = []
 
-    def fake_retrieve(aspect, *args, **kwargs):
-        calls.append(aspect)
+    def fake_retrieve(standalone_query, search_queries, **kwargs):
+        calls.append((standalone_query, search_queries))
         return [document(2)]
 
     monkeypatch.setattr(nodes, "retrieve_multiple_queries", fake_retrieve)
@@ -128,15 +356,15 @@ def test_retry_retrieves_only_missing_aspects(monkeypatch) -> None:
         }
     )
 
-    assert calls == ["missing"]
+    assert calls == [("Question", ["B"])]
     assert update["aspect_documents"]["supported"][0]["chunk_id"] == "chunk-1"
 
 
 def test_reranking_is_per_aspect_and_final_evidence_is_capped(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_rerank(aspect, documents, **kwargs):
-        calls.append(aspect)
+    def fake_rerank(query, documents, **kwargs):
+        calls.append(query)
         return documents[: kwargs["limit"]]
 
     monkeypatch.setattr(nodes, "cross_encoder_rerank", fake_rerank)
@@ -154,9 +382,20 @@ def test_reranking_is_per_aspect_and_final_evidence_is_capped(monkeypatch) -> No
         {"standalone_question": "Question", "aspect_documents": aspect_documents}
     )
 
-    assert calls == ["A", "B", "C", "D"]
+    assert calls == [
+        "Question\nRequired aspect: A",
+        "Question\nRequired aspect: B",
+        "Question\nRequired aspect: C",
+        "Question\nRequired aspect: D",
+    ]
     assert all(len(items) == 3 for items in update["aspect_documents"].values())
-    assert len(update["reranked_docs"]) == 10
+    assert len(update["reranked_docs"]) == 8
+    assert set(update["compressed_views"]) == {"A", "B", "C", "D"}
+    assert all(
+        aspect in item["metadata"]["compressed_views"]
+        for aspect, items in update["aspect_documents"].items()
+        for item in items
+    )
 
 
 def test_broaden_query_allows_only_one_retry(monkeypatch) -> None:
@@ -199,11 +438,15 @@ def test_generate_answer_returns_only_valid_cited_sources(monkeypatch) -> None:
     assert update["sources"][0].content_type == "text"
 
 
-def test_generate_answer_normalizes_grouped_citations(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "raw_answer",
+    ["Supported by both [S1, S2].", "Supported by both 【S1, S2】."],
+)
+def test_generate_answer_normalizes_grouped_citations(monkeypatch, raw_answer) -> None:
     monkeypatch.setattr(
         nodes,
         "call_llm",
-        lambda *args, **kwargs: AIMessage(content="Supported by both [S1, S2]."),
+        lambda *args, **kwargs: AIMessage(content=raw_answer),
     )
 
     update = nodes.generate_answer(
@@ -350,8 +593,8 @@ def test_grader_failure_uses_heuristic_coverage(monkeypatch) -> None:
         }
     )
 
-    assert update["evidence_status"] == "sufficient"
-    assert "matches the assigned aspect" in update["evidence_reason"]
+    assert update["evidence_status"] == "retry"
+    assert "does not directly answer" in update["evidence_reason"]
 
 
 def test_answer_failure_returns_temporary_message_and_skips_verifier(monkeypatch) -> None:

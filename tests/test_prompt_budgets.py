@@ -66,6 +66,19 @@ def test_grader_gets_two_compact_summaries_without_duplicate_table_payload(
     assert nodes._estimated_tokens(prompt) <= settings.grader_input_token_budget
 
 
+def test_grader_summaries_prefer_direct_aspect_evidence() -> None:
+    list_only = document(1, text="A list field stores multiple entries.")
+    unrelated = document(2, text="Selection values configure choices.")
+    scalar = document(3, text="Scalar fields hold one value while list fields hold many.")
+
+    summaries = nodes._format_grader_summaries(
+        [list_only, unrelated, scalar], "Scalar Field"
+    )
+
+    assert "Evidence ID: e3" in summaries
+    assert "Evidence ID: e2" not in summaries
+
+
 def test_answer_budget_keeps_one_unique_source_per_supported_aspect() -> None:
     aspects = [f"aspect-{index}" for index in range(1, 7)]
     documents = [document(index, aspect=aspects[(index - 1) % 6]) for index in range(1, 11)]
@@ -81,6 +94,7 @@ def test_answer_budget_keeps_one_unique_source_per_supported_aspect() -> None:
             standalone_question="Explain configuration and runtime",
             required_output="explanation",
             supported_aspects=" | ".join(aspects),
+            partial_aspects="none",
             missing_aspects="none",
             evidence=evidence,
             answer_structure="- Direct explanation",
@@ -88,10 +102,10 @@ def test_answer_budget_keeps_one_unique_source_per_supported_aspect() -> None:
         settings.answer_input_token_budget,
     )
 
-    assert len(selected) == 10
-    assert len({item["metadata"]["evidence_id"] for item in selected}) == 10
+    assert len(selected) == 8
+    assert len({item["metadata"]["evidence_id"] for item in selected}) == 8
     assert all(any(aspect in item["metadata"]["aspects"] for item in selected) for aspect in aspects)
-    assert all(f"[S{index}]" in prompt for index in range(1, 11))
+    assert all(f"[S{index}]" in prompt for index in range(1, 9))
     assert nodes._estimated_tokens(prompt) <= settings.answer_input_token_budget
 
 

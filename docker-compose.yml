@@ -3,11 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     ports:
-      - "8501:8501"
+      - "${APP_PORT:-8501}:8501"
     volumes:
+      - ./.env:/app/.env:ro
       - ./data:/app/data
       - ./indexes:/app/indexes
       - ./manuals:/app/manuals

@@ -138,6 +138,7 @@ def test_planner_grader_and_diagram_policies_exclude_answer_model() -> None:
 
 def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
+    options: list[dict] = []
 
     class Invocation:
         def __init__(self, model: str):
@@ -145,7 +146,7 @@ def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
 
         def invoke(self, prompt):
             calls.append(("grader", self.model))
-            if self.model == "grader-primary":
+            if self.model == "openai/gpt-oss-20b":
                 raise GroqRequestError("rate_limit", "grader", 429)
             return EvidenceGrade(status="sufficient", reason="fallback")
 
@@ -154,11 +155,19 @@ def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
             self.model = model
 
         def with_structured_output(self, *args, **kwargs):
+            options.append(kwargs)
             return Invocation(self.model)
 
     def policy(role):
         assert role == "grader"
-        return RoleConfig("grader-primary", "grader-fallback", 0, 100, 10, True)
+        return RoleConfig(
+            "openai/gpt-oss-20b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            0,
+            100,
+            10,
+            True,
+        )
 
     monkeypatch.setattr(llm, "role_config", policy)
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client(model))
@@ -166,7 +175,14 @@ def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
     grade = llm.call_structured("prompt", EvidenceGrade, task="grader")
 
     assert grade.status == "sufficient"
-    assert calls == [("grader", "grader-primary"), ("grader", "grader-fallback")]
+    assert calls == [
+        ("grader", "openai/gpt-oss-20b"),
+        ("grader", "meta-llama/llama-4-scout-17b-16e-instruct"),
+    ]
+    assert options == [
+        {"method": "json_schema", "strict": True},
+        {"method": "json_schema", "strict": False},
+    ]
 
 
 def test_plain_generation_roles_never_enable_function_calling() -> None:

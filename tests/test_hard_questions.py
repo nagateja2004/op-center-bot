@@ -272,7 +272,7 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         nodes,
         "retrieve_multiple_queries",
-        lambda aspect, *args, **kwargs: [document(aspect)],
+        lambda standalone_query, search_queries, **kwargs: [document(search_queries[0])],
     )
     monkeypatch.setattr(nodes, "expand_retrieval_context", lambda documents, **kwargs: documents)
     monkeypatch.setattr(

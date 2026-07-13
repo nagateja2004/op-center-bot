@@ -1,7 +1,7 @@
 import pytest
 
 from src.config import Settings
-from src.schemas import DocumentChunk, EvidenceGrade, QueryPlan, RAGState
+from src.schemas import DocumentChunk, EvidenceGrade, QueryPlan, RAGState, RetrievalSegment
 
 
 def test_document_chunk_defaults() -> None:
@@ -17,8 +17,13 @@ def test_requested_schema_contracts() -> None:
     state: RAGState = {"messages": [], "retry_count": 0}
 
     assert plan.needs_diagram is False
+    assert plan.exact_phrases == []
+    assert plan.canonical_terms == []
+    assert plan.aliases == []
+    assert plan.manual_hints == []
     assert grade.missing_concepts == []
     assert state["retry_count"] == 0
+    assert "effective_embedding_limit" in RetrievalSegment.__required_keys__
 
 
 def test_structured_schemas_are_flat() -> None:
@@ -27,6 +32,9 @@ def test_structured_schemas_are_flat() -> None:
         assert not definitions
     assert "aspect_queries" not in QueryPlan.model_fields
     assert "manual_filters" not in QueryPlan.model_fields
+    assert {"exact_phrases", "canonical_terms", "aliases", "manual_hints"}.issubset(
+        QueryPlan.model_fields
+    )
 
 
 def test_settings_reports_missing_api_key() -> None:

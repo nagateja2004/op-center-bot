@@ -35,6 +35,14 @@ def test_streamlit_does_not_rebuild_indexes() -> None:
     assert "build_indexes" not in source
 
 
+def test_streamlit_avoids_deprecated_width_and_arrow_table_paths() -> None:
+    source = Path("app.py").read_text(encoding="utf-8")
+
+    assert "use_container_width" not in source
+    assert "st.dataframe(" not in source
+    assert 'width="stretch"' in source
+
+
 def test_streamlit_streams_only_the_verified_final_answer() -> None:
     source = Path("app.py").read_text(encoding="utf-8")
 
