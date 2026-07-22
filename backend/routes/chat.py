@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+from functools import lru_cache
 import json
 import logging
+from pathlib import Path
 import re
 import time
 from typing import Any, Literal
@@ -18,6 +21,7 @@ from backend.dependencies import get_graph
 from src.groq_limits import get_groq_limiter, groq_request_scope
 from src.inference import InferenceBusyError
 from src.observability import observe
+from src.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,81 @@ def _source_payload(state: dict[str, Any]) -> list[dict[str, Any]]:
                 item["table_rows"] = document.get("metadata", {}).get("table_rows", [])
         payload.append(item)
     return payload
+
+
+@lru_cache(maxsize=2)
+def _load_figure_catalog(path: str, modified_ns: int) -> list[dict[str, Any]]:
+    del modified_ns
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _manual_figure_payload(state: dict[str, Any]) -> list[dict[str, Any]]:
+    if not (
+        state.get("diagram_requested")
+        or state.get("diagram_useful", state.get("needs_diagram", False))
+    ):
+        return []
+    catalog_path = settings.manual_figures_path
+    try:
+        catalog = _load_figure_catalog(str(catalog_path), catalog_path.stat().st_mtime_ns)
+    except OSError:
+        return []
+    source_pages: list[tuple[str, int]] = []
+    for source in state.get("sources", []):
+        item = source.model_dump() if hasattr(source, "model_dump") else dict(source)
+        if item.get("source_file") and item.get("pdf_page"):
+            source_pages.append((str(item["source_file"]), int(item["pdf_page"])))
+    for document in state.get("reranked_docs", []):
+        metadata = document.get("metadata", {})
+        if metadata.get("source_file") and metadata.get("pdf_page"):
+            source_pages.append((str(metadata["source_file"]), int(metadata["pdf_page"])))
+    ranked_pages = list(dict.fromkeys(source_pages))
+    figures_root = settings.manual_figures_dir.resolve()
+    payload: list[dict[str, Any]] = []
+    for source_file, pdf_page in ranked_pages:
+        for figure in catalog:
+            if (
+                figure.get("source_file") != source_file
+                or int(figure.get("pdf_page", 0)) != pdf_page
+            ):
+                continue
+            image_path = (settings.indexes_dir / str(figure.get("path", ""))).resolve()
+            if not image_path.is_relative_to(figures_root):
+                continue
+            try:
+                image = image_path.read_bytes()
+            except OSError:
+                continue
+            if not image or len(image) > 2_000_000:
+                continue
+            payload.append(
+                {
+                    "figure_id": str(figure.get("figure_id", "")),
+                    "manual": str(figure.get("manual", "")),
+                    "pdf_page": pdf_page,
+                    "caption": str(figure.get("caption", "Diagram from the manual")),
+                    "image_base64": base64.b64encode(image).decode("ascii"),
+                }
+            )
+            if len(payload) == 3:
+                return payload
+    return payload
+
+
+def _align_answer_with_manual_figures(
+    answer: str, manual_figures: list[dict[str, Any]]
+) -> str:
+    if not manual_figures:
+        return answer
+    return re.sub(
+        r"(?im)^.*(?:no (?:original )?diagram|no diagram is included|diagram is not included).*$",
+        "**Original manual diagram** – Shown below.",
+        answer,
+    )
 
 
 @router.post("/chat", response_model=ChatAccepted, status_code=status.HTTP_202_ACCEPTED)
@@ -150,10 +229,12 @@ async def stream_chat(
 
                 state = dict((await graph.aget_state(config)).values)
             answer = state.get("answer", "No answer was generated.")
-            for chunk in re.findall(r"\S+\s*", answer):
-                yield _sse("answer", {"text": chunk})
             basic_chat = bool(state.get("basic_chat"))
             sources = [] if basic_chat else _source_payload(state)
+            manual_figures = [] if basic_chat else _manual_figure_payload(state)
+            answer = _align_answer_with_manual_figures(answer, manual_figures)
+            for chunk in re.findall(r"\S+\s*", answer):
+                yield _sse("answer", {"text": chunk})
             yield _sse(
                 "complete",
                 {
@@ -173,9 +254,10 @@ async def stream_chat(
                         )),
                     },
                     "diagram": {
-                        "generated": False if basic_chat else bool(state.get("diagram_generated")),
-                        "dot": "" if basic_chat else _safe_dot(state.get("diagram_dot", "")),
+                        "generated": False if basic_chat or manual_figures else bool(state.get("diagram_generated")),
+                        "dot": "" if basic_chat or manual_figures else _safe_dot(state.get("diagram_dot", "")),
                     },
+                    "manual_figures": manual_figures,
                 },
             )
             await get_groq_limiter().set_status(request_id, "complete")

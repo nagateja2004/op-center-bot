@@ -95,6 +95,7 @@ DECORATIVE_CITATION_RE = re.compile(
     r"【\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*】", re.I
 )
 MAX_EVIDENCE_SOURCES = 8
+RELATIONSHIP_EVIDENCE_ASPECT = "__relationship_evidence__"
 GRADER_EXCERPT_CHARS = 600
 ANSWER_EXCERPT_CHARS = 500
 TRUNCATION_MARKER = "[Evidence truncated at a line boundary.]"
@@ -107,7 +108,7 @@ SAMPLING_REQUIRED_ASPECTS = [
     "Sampling Plan",
     "Sample Tests",
     "sampling status",
-    "failure movement rule",
+    "Sample Test failed-sampling movement override",
     "Move transaction",
 ]
 SAMPLING_ALLOWED_ENTITIES = [
@@ -116,7 +117,7 @@ SAMPLING_ALLOWED_ENTITIES = [
     "Sample Tests",
     "Container",
     "Sampling Status",
-    "Failure Movement Rule",
+    "Sample Test Allows Failed Move",
     "Move Transaction",
     "Next Workflow Step",
     "Movement Blocked",
@@ -152,23 +153,33 @@ def basic_chat_response(question: str) -> str | None:
     normalized = " ".join(re.sub(r"[^a-z0-9\s]", " ", question.casefold()).split())
     if normalized in {
         "hi", "hii", "hello", "hellow", "hey", "hi there", "hello there",
-        "good morning", "good afternoon", "good evening",
+        "hey there", "good morning", "good afternoon", "good evening", "good night",
     }:
         return (
             "Hello! Ask me anything about the indexed Opcenter manuals. I can "
             "explain concepts, provide steps, cite sources, and create diagrams."
         )
-    if normalized in {"thanks", "thank you", "thankyou", "thx"}:
+    if normalized in {
+        "thanks", "thank you", "thankyou", "thx", "thanks a lot", "many thanks",
+    }:
         return "You're welcome! Ask another Opcenter question whenever you're ready."
-    if normalized in {"bye", "goodbye", "see you", "see you later"}:
+    if normalized in {"bye", "goodbye", "see you", "see you later", "talk to you later"}:
         return "Goodbye! Come back whenever you need help with Opcenter."
-    if normalized in {"how are you", "how are you doing"}:
+    if normalized in {"how are you", "how are you doing", "how is it going", "how s it going"}:
         return "I'm ready to help with questions about your indexed Opcenter manuals."
-    if normalized in {"help", "what can you do", "who are you"}:
+    if normalized in {
+        "help", "please help", "can you help me", "how can you help me",
+        "what can you do", "who are you", "what is your name", "are you a bot",
+        "tell me about yourself", "what should i ask",
+    }:
         return (
             "I answer questions from the indexed Opcenter manuals. I can explain "
             "concepts, list requested steps, cite manual sources, and generate useful diagrams."
         )
+    if normalized in {"ok", "okay", "great", "nice", "cool", "got it", "understood"}:
+        return "Great—send me your next Opcenter question when you're ready."
+    if normalized in {"sorry", "my mistake", "no problem"}:
+        return "No problem. How can I help with Opcenter?"
     return None
 
 
@@ -193,6 +204,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
             "diagram_dot": "",
             "diagram_error": "",
             "diagram_generated": False,
+            "relationship_mode": False,
             "retry_count": 0,
         }
     diagram_requested, requested_diagram_type = detect_explicit_diagram_request(question)
@@ -218,6 +230,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
         except GroqRequestError:
             plan = _deterministic_plan(question)
     standalone = plan.standalone_question.strip() or question
+    relationship_mode = _is_relationship_question(standalone)
     domain = _merge_plan_domain(
         question,
         _domain_context(f"{question} {standalone}"),
@@ -233,7 +246,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
     required_manuals = _required_manuals(standalone)
     entities = _unique_text([*plan.entities, *domain["canonical_terms"]])
     if _is_sampling_movement_question(standalone):
-        entities = _unique_text([*entities, *SAMPLING_ALLOWED_ENTITIES])
+        entities = list(SAMPLING_ALLOWED_ENTITIES)
     concept_queries = _unique_text([
         *plan.exact_phrases,
         *domain["canonical_terms"],
@@ -245,6 +258,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
             plan.search_queries,
             concept_queries,
             multiple_aspects=len(aspects) > 1,
+            relationship_mode=relationship_mode,
         )
         for aspect in aspects
     }
@@ -268,6 +282,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
         **domain,
         "intent": plan.intent,
         "complexity": "multi_aspect" if len(aspects) > 1 else "single_topic",
+        "relationship_mode": relationship_mode,
         "required_aspects": aspects,
         "aspect_queries": aspect_queries,
         "required_output": required_output,
@@ -306,6 +321,7 @@ async def aunderstand_question(state: RAGState) -> RAGState:
 
 def retrieve_documents(state: RAGState) -> RAGState:
     aspects = state.get("required_aspects") or [state["standalone_question"]]
+    multi_aspect = len(aspects) > 1
     missing = set(state.get("missing_aspects", []))
     retrying = state.get("retry_count", 0) > 0 and bool(missing)
     aspect_documents = {
@@ -328,7 +344,7 @@ def retrieve_documents(state: RAGState) -> RAGState:
             aspect, term_queries, state.get("aliases", [])
         )
         documents = retrieve_multiple_queries(
-            standalone_query=state["standalone_question"],
+            standalone_query=aspect if multi_aspect else state["standalone_question"],
             search_queries=queries,
             entities=retrieval_entities,
             aliases=retrieval_aliases,
@@ -347,6 +363,22 @@ def retrieve_documents(state: RAGState) -> RAGState:
         )
         aspect_documents[aspect] = [
             _copy_with_aspect(document, aspect) for document in documents
+        ]
+    if state.get("relationship_mode") and not (
+        retrying and RELATIONSHIP_EVIDENCE_ASPECT in aspect_documents
+    ):
+        relationship_query = _relationship_query(aspects)
+        documents = retrieve_multiple_queries(
+            standalone_query=relationship_query,
+            search_queries=[state["standalone_question"]],
+            entities=state.get("entities", []),
+            aliases=state.get("aliases", []),
+            preferred_manuals=_manual_preferences(state.get("manual_filters", {})),
+            intent="relationship direction type optionality",
+        )
+        aspect_documents[RELATIONSHIP_EVIDENCE_ASPECT] = [
+            _copy_with_aspect(document, RELATIONSHIP_EVIDENCE_ASPECT)
+            for document in documents
         ]
     return {
         "aspect_documents": aspect_documents,
@@ -380,17 +412,23 @@ def expand_context(state: RAGState) -> RAGState:
 def rerank_documents(state: RAGState) -> RAGState:
     standalone = state["standalone_question"]
     aspect_documents: dict[str, list[RetrievedDocument]] = {}
+    multi_aspect = len(state.get("aspect_documents", {})) > 1
     compressed_views = {}
     complete_procedure = "procedure" in state.get("required_output", [])
     for aspect, documents in state.get("aspect_documents", {}).items():
+        rerank_query = (
+            _relationship_query(state.get("required_aspects", []))
+            if aspect == RELATIONSHIP_EVIDENCE_ASPECT
+            else aspect if multi_aspect else standalone
+        )
         resolved = resolve_evidence_units(
             cross_encoder_rerank(
-                f"{standalone}\nRequired aspect: {aspect}",
+                rerank_query,
                 documents,
                 intent=f"{state.get('intent', '')} {aspect}",
-                limit=6,
+                limit=8 if aspect == RELATIONSHIP_EVIDENCE_ASPECT else 6,
             ),
-            limit=3,
+            limit=5 if aspect == RELATIONSHIP_EVIDENCE_ASPECT else 3,
         )
         compressed = [
             _with_compressed_view(
@@ -402,13 +440,20 @@ def rerank_documents(state: RAGState) -> RAGState:
             )
             for document in resolved
         ]
+        if aspect == RELATIONSHIP_EVIDENCE_ASPECT:
+            compressed = [
+                _tag_mentioned_aspects(document, state.get("required_aspects", []))
+                for document in compressed
+            ]
         aspect_documents[aspect] = compressed
         compressed_views[aspect] = [
             document["metadata"]["compressed_views"][aspect]
             for document in compressed
         ]
     documents = _merge_aspect_documents(
-        aspect_documents, limit=MAX_EVIDENCE_SOURCES
+        aspect_documents,
+        limit=MAX_EVIDENCE_SOURCES,
+        prefer_shared=state.get("relationship_mode", False),
     )
     for aspect, aspect_results in aspect_documents.items():
         logger.info(
@@ -447,7 +492,10 @@ async def agrade_evidence(state: RAGState) -> RAGState:
             "manual_coverage": {},
         }
     for aspect in aspects:
-        documents = state.get("aspect_documents", {}).get(aspect, [])
+        documents = _unique_evidence_documents([
+            *state.get("aspect_documents", {}).get(aspect, []),
+            *state.get("aspect_documents", {}).get(RELATIONSHIP_EVIDENCE_ASPECT, []),
+        ])
         if not documents and len(aspects) == 1:
             documents = state.get("reranked_docs", [])
         if not documents:
@@ -466,6 +514,7 @@ async def agrade_evidence(state: RAGState) -> RAGState:
                         standalone_question=state["standalone_question"],
                         required_aspects=" | ".join(aspects),
                         aspect=aspect,
+                        relationship_requirement=_relationship_requirements(state),
                         evidence=_format_grader_summaries(documents, aspect),
                     ),
                     settings.grader_input_token_budget,
@@ -619,6 +668,7 @@ async def agenerate_answer(state: RAGState) -> RAGState:
             partial_aspects=" | ".join(partial_aspects) or "none",
             missing_aspects=" | ".join(state.get("missing_aspects", [])) or "none",
             evidence=evidence,
+            relationship_requirements=_relationship_requirements(state),
             answer_structure="\n".join(
                 f"- {heading}" for heading in _answer_structure(state["standalone_question"], required_output)
             ),
@@ -676,6 +726,7 @@ async def averify_answer(state: RAGState) -> RAGState:
             required_aspects=" | ".join(state.get("required_aspects", [])),
             partial_aspects=" | ".join(state.get("partial_aspects", [])) or "none",
             missing_aspects=" | ".join(state.get("missing_aspects", [])) or "none",
+            relationship_requirements=_relationship_requirements(state),
             answer_structure=" | ".join(
                 _answer_structure(
                     state.get("standalone_question", ""), state.get("required_output", [])
@@ -701,6 +752,9 @@ async def averify_answer(state: RAGState) -> RAGState:
         for number in CITATION_RE.findall(corrected)
     )
     answer = _remove_invalid_citations(corrected, len(documents)).strip()
+    answer = _apply_sampling_guardrails(
+        answer, documents, state.get("standalone_question", "")
+    )
     sources = _cited_sources(answer, documents)
     answer = _sanitize_cross_manual_label(answer, sources)
     citation_ids = set(CITATION_RE.findall(answer))
@@ -792,7 +846,9 @@ async def agenerate_diagram(state: RAGState) -> RAGState:
             decisions="\n".join(decisions) or "none",
             outcomes=" | ".join(outcomes) or "none",
             source_ids=" | ".join(source_ids),
-            diagram_rules=_diagram_rules(sampling_decision),
+            diagram_rules=_diagram_rules(
+                sampling_decision, state.get("relationship_mode", False)
+            ),
         ),
         settings.diagram_input_token_budget,
     )
@@ -814,7 +870,7 @@ async def agenerate_diagram(state: RAGState) -> RAGState:
         direction,
         allowed_entities=set(entities) if sampling_decision else None,
         required_entities={
-            "Sampling Plan", "Sample Tests", "Sampling Status", "Failure Movement Rule"
+            "Sampling Plan", "Sample Tests", "Sampling Status", "Sample Test Allows Failed Move"
         } if sampling_decision else set(),
         source_ids=set(source_ids),
         decision_diagram=sampling_decision,
@@ -931,6 +987,8 @@ def _deterministic_plan(question: str) -> QueryPlan:
 
 def _fallback_aspects(question: str, canonical_terms: list[str]) -> list[str]:
     concepts = set(canonical_terms)
+    if "Resource Modeling Sequence" in concepts:
+        return ["Resource Modeling Sequence"]
     field_aspects = [
         concept
         for concept in ("Scalar Field", "List Field", "Validate Event")
@@ -1013,8 +1071,22 @@ def _heuristic_grade(
     )
     field_or_table_requested = bool(aspect_terms & {"field", "fields", "table"})
     definition_language = bool(
-        re.search(r"\b(?:means|represents|is defined as|defines|consists of|refers to)\b", evidence)
+        re.search(
+            r"\b(?:means|represents|is defined as|defines|consists of|refers to|"
+            r"contains?|associated|assigned|references?|parent|child)\b",
+            evidence,
+        )
     )
+
+    if state.get("relationship_mode") and not re.search(
+        r"\b(?:parent|child|contains?|belongs?|associated|assigned|references?|"
+        r"optional|required|field|level|member|group|transition|before|after)\b",
+        combined,
+    ):
+        return EvidenceGrade(
+            status=weak_status,
+            reason="The evidence names the aspect but does not establish a relationship or role.",
+        )
 
     if event_requested:
         if not exact_aspect or "event" not in evidence_terms:
@@ -1160,6 +1232,98 @@ def _ensure_queries(
     return unique
 
 
+def _is_relationship_question(question: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:related|relationships?|hierarch\w*|parent[- ]child|contains?|"
+            r"references?|depends?\s+on|dependencies|associated|connect(?:ed|s|ion)?|"
+            r"architecture)\b",
+            question,
+            re.I,
+        )
+    )
+
+
+def _relationship_requirements(state: RAGState) -> str:
+    if not state.get("relationship_mode"):
+        return "No additional relationship classification requested."
+    return (
+        "For every requested term, establish from direct evidence whether it is an "
+        "object, field, field value, group, transaction, or other concept. For every "
+        "relationship, preserve source-to-target direction and classify it as "
+        "parent-child, membership, required reference, optional reference, sequence, "
+        "or runtime use. Mere co-occurrence of two terms is not relationship evidence."
+    )
+
+
+def _relationship_query(aspects: list[str]) -> str:
+    return " ".join(
+        [
+            *aspects,
+            "parent child optional required reference contains membership field value relationship direction",
+        ]
+    )
+
+
+def _relationship_evidence_score(document: RetrievedDocument) -> int:
+    text = (
+        f"{document['metadata'].get('section', '')} {document['text']}"
+    ).casefold()
+    weighted_patterns = {
+        r"\bparent[- ]child\b": 5,
+        r"\bparent resource\b": 5,
+        r"\bchild resources?\b": 4,
+        r"\bcontains?\b": 2,
+        r"\breferences?\b": 2,
+        r"\bbelongs?\b": 2,
+        r"\bassigned\b": 1,
+        r"\boptional\b": 1,
+        r"\brequired\b": 1,
+        r"\bfield\b": 1,
+    }
+    return sum(
+        weight * len(re.findall(pattern, text))
+        for pattern, weight in weighted_patterns.items()
+    )
+
+
+def _tag_mentioned_aspects(
+    document: RetrievedDocument, aspects: list[str]
+) -> RetrievedDocument:
+    tagged = _copy_with_aspect(document, RELATIONSHIP_EVIDENCE_ASPECT)
+    document_terms = set(
+        _content_terms(
+            f"{tagged['metadata'].get('section', '')} {tagged['text']}"
+        )
+    )
+    for aspect in aspects:
+        aspect_terms = set(_content_terms(aspect))
+        if aspect_terms and aspect_terms.issubset(document_terms):
+            tagged = _copy_with_aspect(tagged, aspect)
+    return tagged
+
+
+def _explicit_question_concepts(question: str) -> list[str]:
+    """Return non-overlapping named concepts in the order written by the user."""
+    matches: list[tuple[int, int, str]] = []
+    for canonical, entry in _concept_catalog().items():
+        for alias in entry["aliases"]:
+            for match in re.finditer(
+                rf"(?<!\w){re.escape(alias)}(?!\w)", question, re.I
+            ):
+                matches.append((match.start(), match.end(), canonical))
+    selected: list[tuple[int, int, str]] = []
+    for start, end, canonical in sorted(
+        matches, key=lambda item: (-(item[1] - item[0]), item[0])
+    ):
+        if any(start < chosen_end and end > chosen_start for chosen_start, chosen_end, _ in selected):
+            continue
+        selected.append((start, end, canonical))
+    return _unique_text(
+        canonical for _, _, canonical in sorted(selected, key=lambda item: item[0])
+    )
+
+
 def _required_aspects(question: str, aspects: list[str]) -> list[str]:
     if _is_sampling_movement_question(question):
         return list(SAMPLING_REQUIRED_ASPECTS)
@@ -1180,13 +1344,22 @@ def _required_aspects(question: str, aspects: list[str]) -> list[str]:
         not aspects or all("electronic signature" in aspect.casefold() for aspect in aspects)
     ):
         return ["Electronic Signatures"]
+    explicit_objects = _explicit_question_concepts(question)
+    if len(explicit_objects) >= 2 and _is_relationship_question(question):
+        return explicit_objects[:8]
+    if len(explicit_objects) >= 3 and re.search(
+        r"\b(?:compare|comparison|distinguish|modeling|runtime|shop[- ]floor)\b",
+        question,
+        re.I,
+    ):
+        return explicit_objects[:8]
     unique = list(
         dict.fromkeys(
             cleaned
             for aspect in aspects
             if (cleaned := " ".join(aspect.split()))
         )
-    )[:6]
+    )[:8]
     return unique or [question]
 
 
@@ -1196,6 +1369,7 @@ def _aspect_queries(
     canonical_terms: list[str],
     *,
     multiple_aspects: bool = False,
+    relationship_mode: bool = False,
 ) -> list[str]:
     aspect_terms = set(_content_terms(aspect))
     specific_terms = aspect_terms - {
@@ -1218,11 +1392,19 @@ def _aspect_queries(
             if not require_overlap or match_terms & set(_content_terms(value))
         ]
 
-    candidates = [
-        aspect,
-        *related(planner_queries, require_overlap=multiple_aspects),
-        *related(canonical_terms, require_overlap=multiple_aspects),
-    ]
+    candidates = [aspect]
+    if relationship_mode:
+        candidates.extend(
+            [
+                f"{aspect} parent child contains reference optional required field definition",
+            ]
+        )
+    candidates.extend(
+        [
+            *related(planner_queries, require_overlap=multiple_aspects),
+            *related(canonical_terms, require_overlap=multiple_aspects),
+        ]
+    )
     return _unique_text(candidates)[:4]
 
 
@@ -1233,7 +1415,7 @@ def _required_output(question: str, outputs: list[str], intent: str) -> list[str
         required.append("explanation")
     if re.search(r"\b(?:cannot|can't|fails?|problem|issue|stuck|troubleshoot)\b", text):
         required.extend(["likely_reasons", "checks"])
-    if re.search(r"\b(?:compare|comparison|difference|versus|vs\.? )\b", text):
+    if re.search(r"\b(?:compare|comparison|difference|distinguish|versus|vs\.? )\b", text):
         required.append("comparison_table")
     if re.search(r"\b(?:procedure|how do|how to|steps?|step-by-step)\b", text):
         required.append("procedure")
@@ -1260,6 +1442,12 @@ def _required_manuals(question: str) -> list[str]:
     if "modeling" in text and "shop floor" in text:
         required.extend(["Modeling", "Shop Floor"])
     if re.search(r"\b(?:execution electronics|opcenter electronics|ocexel)\b", text):
+        required.append("Execution Electronics")
+    if re.search(
+        r"\b(?:resource[- ]modeling sequence|modeling sequence for resource management|"
+        r"resource categories? and families)\b",
+        text,
+    ):
         required.append("Execution Electronics")
     if re.search(r"\b(?:execution discrete|opcenter discrete|ex[ -]?ds|exds)\b", text):
         required.append("Execution Discrete")
@@ -1439,13 +1627,17 @@ def _merge_document_details(
 
 
 def _merge_aspect_documents(
-    aspect_documents: dict[str, list[RetrievedDocument]], *, limit: int
+    aspect_documents: dict[str, list[RetrievedDocument]],
+    *,
+    limit: int,
+    prefer_shared: bool = False,
 ) -> list[RetrievedDocument]:
     """Round-robin aspect evidence so one topic cannot crowd out the others."""
     merged: list[RetrievedDocument] = []
     by_evidence_id: dict[str, RetrievedDocument] = {}
     depth = 0
-    while len(merged) < limit:
+    candidate_count = sum(len(documents) for documents in aspect_documents.values())
+    while len(merged) < candidate_count:
         examined = False
         for aspect, documents in aspect_documents.items():
             if depth >= len(documents):
@@ -1458,11 +1650,72 @@ def _merge_aspect_documents(
             else:
                 merged.append(candidate)
                 by_evidence_id[evidence_id] = candidate
-            if len(merged) >= limit:
+            if len(merged) >= candidate_count:
                 break
         if not examined:
             break
         depth += 1
+    if prefer_shared:
+        original_order = {id(document): index for index, document in enumerate(merged)}
+        direct_evidence_ids = {
+            _evidence_id(document)
+            for aspect, documents in aspect_documents.items()
+            if aspect != RELATIONSHIP_EVIDENCE_ASPECT
+            for document in documents
+        }
+        relationship_shared = sorted(
+            (
+                document
+                for document in merged
+                if RELATIONSHIP_EVIDENCE_ASPECT
+                in document["metadata"].get("aspects", [])
+            ),
+            key=lambda document: (
+                -_relationship_evidence_score(document),
+                original_order[id(document)],
+            ),
+        )[:1]
+        direct_shared = sorted(
+            (
+                document
+                for document in merged
+                if len(document["metadata"].get("aspects", [])) > 1
+                and _evidence_id(document) in direct_evidence_ids
+            ),
+            key=lambda document: (
+                -_relationship_evidence_score(document),
+                -len(document["metadata"].get("aspects", [])),
+                original_order[id(document)],
+            ),
+        )
+        shared = [
+            *relationship_shared,
+            *(document for document in direct_shared if document not in relationship_shared),
+        ]
+        selected: list[RetrievedDocument] = []
+        covered: set[str] = set()
+        for document in shared:
+            document_aspects = set(document["metadata"].get("aspects", []))
+            if document_aspects - covered:
+                selected.append(document)
+                covered.update(document_aspects)
+        merged_by_id = {_evidence_id(document): document for document in merged}
+        for aspect, documents in aspect_documents.items():
+            if aspect in covered:
+                continue
+            match = next(
+                (
+                    merged_by_id[_evidence_id(document)]
+                    for document in documents
+                    if merged_by_id[_evidence_id(document)] not in selected
+                ),
+                None,
+            )
+            if match:
+                selected.append(match)
+                covered.update(match["metadata"].get("aspects", []))
+        selected.extend(document for document in merged if document not in selected)
+        merged = selected
     return merged[:limit]
 
 
@@ -1630,6 +1883,11 @@ def _select_answer_documents(
     unique = _unique_evidence_documents(documents)
     selected: list[RetrievedDocument] = []
     for aspect in supported_aspects:
+        if any(
+            aspect in document["metadata"].get("aspects", [])
+            for document in selected
+        ):
+            continue
         match = next(
             (
                 document
@@ -1784,6 +2042,72 @@ def _verified_relationships(answer: str) -> list[str]:
     ][:8]
 
 
+def _apply_sampling_guardrails(
+    answer: str, documents: list[RetrievedDocument], question: str
+) -> str:
+    """Remove known sampling inferences that are not direct manual claims."""
+    if not _is_sampling_movement_question(question):
+        return answer
+    evidence = [document["text"] for document in documents]
+
+    def citation(pattern: str) -> str:
+        return next(
+            (
+                f"[S{index}]"
+                for index, text in enumerate(evidence, start=1)
+                if re.search(pattern, text, re.I)
+            ),
+            "",
+        )
+
+    removed: set[str] = set()
+    kept: list[str] = []
+    for line in answer.splitlines():
+        lowered = line.casefold()
+        if "failure movement rule" in lowered:
+            removed.add("failure_rule")
+            continue
+        if "switching rule" in lowered and re.search(r"\b(?:block|prevent).*\bmov", lowered):
+            removed.add("switching")
+            continue
+        if "sample rate counter" in lowered and re.search(
+            r"\b(?:samples? collected|required count|reached|required samples?)\b", lowered
+        ):
+            removed.add("counter")
+            continue
+        if "selection list" in lowered and re.search(r"\b(?:block|cause|not listed)\b", lowered):
+            removed.add("selection")
+            continue
+        if "red" in lowered and re.search(r"\b(?:block|cause|un-overridden)\b", lowered):
+            removed.add("report")
+            continue
+        kept.append(line)
+
+    corrections: list[str] = []
+    source = citation(r"allow a move even if (?:the )?container fails sampling")
+    if "failure_rule" in removed and source:
+        corrections.append(
+            "The cited manuals do not define a separate Failure Movement Rule. "
+            "Failed-sampling movement is controlled by the Sample Test option that "
+            f"allows movement after sampling failure {source}."
+        )
+    source = citation(r"switching rules?[\s\S]{0,180}inspection level")
+    if "switching" in removed and source:
+        corrections.append(
+            "Switching Rules change inspection levels; the cited evidence does not "
+            f"establish them as direct Move blockers {source}."
+        )
+    source = citation(r"sample rate counter[\s\S]{0,350}(?:started|moved|moved in)")
+    if "counter" in removed and source:
+        corrections.append(
+            "Sample Rate Counter counts matching containers that are started or moved; "
+            f"it is not a count of collected samples {source}."
+        )
+    if corrections:
+        kept.extend(["", "**Evidence corrections**", *corrections])
+    return "\n".join(kept).strip()
+
+
 def _cited_step_diagram(answer: str, direction: str, source_ids: set[str]) -> str:
     """Turn an answer's cited numbered steps into a safe visual fallback."""
     steps: list[tuple[str, list[str]]] = []
@@ -1886,10 +2210,13 @@ def _verified_entities(
 ) -> list[str]:
     verified_text = f"{answer} {support_text}".casefold()
     if _is_sampling_movement_question(question):
-        return [
+        verified = [
             entity for entity in SAMPLING_ALLOWED_ENTITIES
             if entity.casefold() in verified_text
         ]
+        if re.search(r"allow\w*\s+(?:a\s+)?move[\s\S]{0,80}fail", verified_text):
+            verified.append("Sample Test Allows Failed Move")
+        return _unique_text(verified)
     extracted = re.findall(
         r"\b(?:[A-Z]{2,}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})\b", answer
     )
@@ -1918,11 +2245,17 @@ def _verified_outcomes(question: str, answer: str, support_text: str) -> list[st
     return []
 
 
-def _diagram_rules(sampling_decision: bool) -> str:
+def _diagram_rules(sampling_decision: bool, relationship_mode: bool = False) -> str:
     if not sampling_decision:
+        if relationship_mode:
+            return (
+                "Use solid edges only for evidenced parent-child, membership, or sequence "
+                "relationships and dashed edges for evidenced optional references. Label "
+                "fields and field values as attributes; do not present them as modeling objects."
+            )
         return "Use boxes for objects/actions and diamonds only for verified conditions."
     return (
-        "Use diamonds for Sampling Status and Failure Movement Rule; boxes for objects, actions, and outcomes. "
+        "Use diamonds for Sampling Status and Sample Test Allows Failed Move; boxes for objects, actions, and outcomes. "
         "Decision edges use Yes, No, Pass, Fail, or In Process. Start Container -> Current Spec. "
         "Only Move Transaction -> Next Workflow Step advances the container. Failures end at Movement Blocked."
     )
@@ -2347,7 +2680,7 @@ def _valid_sampling_decision_dot(
         "Container", "Current Spec", "Move Transaction", "Next Workflow Step", "Movement Blocked"
     }.issubset(labels):
         return False
-    decision_labels = {"Sampling Status", "Failure Movement Rule"} & labels
+    decision_labels = {"Sampling Status", "Sample Test Allows Failed Move"} & labels
     if any(id_to_shape[node_id] != "diamond" for node_id, label in id_to_label.items() if label in decision_labels):
         return False
     if any(
@@ -2376,10 +2709,10 @@ def _valid_sampling_decision_dot(
         ("Sampling Plan", "Sample Tests"),
         ("Sample Tests", "Sampling Status"),
         ("Sampling Status", "Move Transaction"),
-        ("Sampling Status", "Failure Movement Rule"),
+        ("Sampling Status", "Sample Test Allows Failed Move"),
         ("Sampling Status", "Movement Blocked"),
-        ("Failure Movement Rule", "Move Transaction"),
-        ("Failure Movement Rule", "Movement Blocked"),
+        ("Sample Test Allows Failed Move", "Move Transaction"),
+        ("Sample Test Allows Failed Move", "Movement Blocked"),
         ("Move Transaction", "Next Workflow Step"),
     }
     if not pairs.issubset(allowed_pairs):

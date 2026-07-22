@@ -149,6 +149,7 @@ class RAGState(TypedDict, total=False):
     manual_hints: list[str]
     intent: str
     complexity: Literal["single_topic", "multi_aspect"]
+    relationship_mode: bool
     required_aspects: list[str]
     aspect_queries: dict[str, list[str]]
     required_output: list[str]

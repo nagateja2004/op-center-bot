@@ -36,6 +36,17 @@
     ],
     "manual_hints": ["Modeling"]
   },
+  "Resource Modeling Sequence": {
+    "aliases": [
+      "resource modeling sequence",
+      "resource-modeling sequence",
+      "modeling sequence for resource management",
+      "resource management modeling sequence",
+      "resource categories and families",
+      "defining resource categories and families"
+    ],
+    "manual_hints": ["Execution Electronics"]
+  },
   "Factory Hierarchy": {
     "aliases": [
       "company-to-equipment hierarchy",
@@ -43,6 +54,18 @@
       "enterprise-to-machine hierarchy",
       "factory structure"
     ],
+    "manual_hints": ["Modeling"]
+  },
+  "Factory Level": {
+    "aliases": ["factory levels", "area level", "cell level", "equipment level"],
+    "manual_hints": ["Modeling"]
+  },
+  "Inventory Location": {
+    "aliases": ["inventory locations", "material inventory location"],
+    "manual_hints": ["Modeling"]
+  },
+  "Equipment Resource": {
+    "aliases": ["equipment resources", "resource equipment"],
     "manual_hints": ["Modeling"]
   },
   "Information Model": {
@@ -127,7 +150,11 @@
     "manual_hints": ["Installation"]
   },
   "Resource": {
-    "aliases": ["machine", "equipment", "work center", "valid machine"],
+    "aliases": ["machine", "equipment", "valid machine"],
+    "manual_hints": ["Modeling"]
+  },
+  "Resource Family": {
+    "aliases": ["resource families", "family of resources"],
     "manual_hints": ["Modeling"]
   },
   "Resource Group": {
@@ -139,6 +166,26 @@
       "which machine is valid"
     ],
     "manual_hints": ["Modeling"]
+  },
+  "Work Center": {
+    "aliases": ["work centers", "work centre", "work centres"],
+    "manual_hints": ["Modeling"]
+  },
+  "Setup": {
+    "aliases": ["setups", "machine setup", "physical machine configuration"],
+    "manual_hints": ["Modeling"]
+  },
+  "Resource Setup": {
+    "aliases": ["resource setup transaction", "resource setup page", "setting up the resource"],
+    "manual_hints": ["Modeling", "Shop Floor"]
+  },
+  "Recipe Matrix": {
+    "aliases": ["recipe matrices", "recipe selection matrix"],
+    "manual_hints": ["Execution Electronics", "Modeling"]
+  },
+  "Resource Status Model": {
+    "aliases": ["resource status models", "resource status transitions"],
+    "manual_hints": ["Modeling", "Execution Electronics"]
   },
   "Spec": {
     "aliases": ["workflow step", "manufacturing step", "process step"],

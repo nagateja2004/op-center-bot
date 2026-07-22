@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 
 import src.nodes as nodes
-import src.retrieval as retrieval
 from src.graph import graph
 from src.schemas import (
     EvidenceGrade,
@@ -35,7 +34,7 @@ QUESTIONS = {
     ),
     "sampling_movement": (
         "Using Modeling and Shop Floor evidence, explain how the Current Spec, "
-        "Sampling Plan, Sample Tests, sampling status, failure movement rule, and "
+        "Sampling Plan, Sample Tests, sampling status, failed-sampling movement override, and "
         "Move transaction determine whether a Container advances to the Next Workflow "
         "Step or remains Movement Blocked. Include likely reasons, checks, and a decision diagram."
     ),
@@ -53,13 +52,13 @@ def document(aspect: str) -> dict:
     release = "Release 2504+ Rev. 1"
     section = aspect
     text = f"Manual evidence for {aspect}."
-    if any(word in lowered for word in ("current spec", "sampling plan", "sample tests", "failure movement")):
+    if any(word in lowered for word in ("current spec", "sampling plan", "sample tests", "failed-sampling movement")):
         manual = "Opcenter Execution Core Modeling User Guide"
         release = "Release 2510+ Rev. 1"
         section = "Spec sampling configuration"
         text = (
-            f"{aspect} configures the Current Spec, Sampling Plan, Sample Tests, and "
-            "Failure Movement Rule for the Container and Movement Blocked outcome."
+            f"{aspect} configures the Current Spec, Sampling Plan, and Sample Tests. "
+            "A Sample Test can allow a move even if the Container fails sampling."
         )
     elif any(word in lowered for word in ("sampling status", "move transaction")):
         manual = "Opcenter Execution Core Shop Floor User Guide"
@@ -203,10 +202,10 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
             elif "current spec" in lowered and "move transaction" in lowered:
                 answer = (
                     "**Direct explanation**\nThe Container is evaluated at its Current Spec before movement [S1].\n\n"
-                    "**Configuration relationship**\nThe Current Spec links the Sampling Plan and Sample Tests, while the Failure Movement Rule controls failed-sample movement [S2] [S3] [S5].\n\n"
+                    "**Configuration relationship**\nThe Current Spec links the Sampling Plan and Sample Tests; a Sample Test can allow movement after failed sampling [S2] [S3] [S5].\n\n"
                     "**Runtime behavior**\nSampling Status is evaluated at runtime; the Move Transaction advances the Container to the Next Workflow Step when movement is allowed [S4] [S6].\n\n"
-                    "**Likely reasons movement is blocked**\nSampling Status may be In Process, or a Fail result may be blocked by the Failure Movement Rule and leave Movement Blocked [S4] [S5].\n\n"
-                    "**What to check**\nCheck the Current Spec links, configured Sampling Plan and Sample Tests, current Sampling Status, Failure Movement Rule, and availability of the Move Transaction [S1] [S2] [S3] [S4] [S5] [S6].\n\n"
+                    "**Likely reasons movement is blocked**\nSampling Status may be In Process, or the Sample Test may not allow movement after a Fail result [S4] [S5].\n\n"
+                    "**What to check**\nCheck the Current Spec links, configured Sampling Plan and Sample Tests, current Sampling Status, the Sample Test failed-movement option, and availability of the Move Transaction [S1] [S2] [S3] [S4] [S5] [S6].\n\n"
                     "**Decision diagram**\nThe diagram summarizes the verified runtime decision path [S1] [S4] [S6]."
                 )
             elif "cannot continue" in lowered:
@@ -287,7 +286,7 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
                         'plan [label="Sampling Plan [S2]", shape=box];\n'
                         'tests [label="Sample Tests [S3]", shape=box];\n'
                         'status [label="Sampling Status? [S4]", shape=diamond];\n'
-                        'rule [label="Failure Movement Rule? [S5]", shape=diamond];\n'
+                        'rule [label="Sample Test Allows Failed Move? [S5]", shape=diamond];\n'
                         'move [label="Move Transaction [S6]", shape=box];\n'
                         'next [label="Next Workflow Step [S6]", shape=box];\n'
                         'blocked [label="Movement Blocked [S5]", shape=box];\n'
@@ -424,14 +423,11 @@ def test_diagram_failure_preserves_verified_answer_and_sources(
 def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
     hard_pipeline, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(nodes, "retrieve_multiple_queries", retrieval.retrieve_multiple_queries)
-    monkeypatch.setattr(nodes, "expand_retrieval_context", retrieval.expand_context)
     monkeypatch.setattr(
         nodes,
         "cross_encoder_rerank",
         lambda query, documents, **kwargs: documents[: kwargs["limit"]],
     )
-    monkeypatch.setattr(nodes, "resolve_evidence_units", retrieval.resolve_evidence_units)
     diagram_prompts: list[str] = []
     original_llm = nodes.call_llm
 
@@ -499,7 +495,7 @@ def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
     validation = {
         "allowed_entities": set(nodes.SAMPLING_ALLOWED_ENTITIES),
         "required_entities": {
-            "Sampling Plan", "Sample Tests", "Sampling Status", "Failure Movement Rule"
+            "Sampling Plan", "Sample Tests", "Sampling Status", "Sample Test Allows Failed Move"
         },
         "source_ids": {f"S{number}" for number in range(1, 7)},
         "decision_diagram": True,

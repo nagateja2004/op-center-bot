@@ -16,7 +16,11 @@ def test_retry_route_is_bounded() -> None:
 
 
 def test_basic_chat_skips_retrieval_and_returns_no_artifacts() -> None:
-    assert basic_chat_response("Hellow!")
+    for message in (
+        "Hellow!", "Good night", "How is it going?", "Can you help me?",
+        "What is your name?", "Thanks a lot", "Got it", "Sorry",
+    ):
+        assert basic_chat_response(message)
     assert basic_chat_response("What is a Resource?") is None
     assert route_after_understand({"basic_chat": True}) == "end"
 

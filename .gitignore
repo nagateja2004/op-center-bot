@@ -29,3 +29,5 @@ indexes/heading_index.json
 indexes/concept_index.json
 indexes/ingestion_audit.json
 indexes/search_representations.json
+indexes/manual_figures.json
+indexes/manual_figures/

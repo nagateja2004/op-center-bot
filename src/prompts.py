@@ -13,7 +13,7 @@ Relevant recent messages:
 {conversation}
 Available manuals: {manual_names}
 Supported output types: {supported_output_types}
-Return one flat QueryPlan. Resolve follow-ups from recent conversation while preserving the user's original meaning. Split compound questions into 1-6 independent required_aspects. Detect exact manual phrases/headings in exact_phrases. Map indirect wording to canonical Opcenter terminology in canonical_terms and record matched wording in aliases. Generate 1-3 strong search_queries per aspect. Distinguish configuration concepts from runtime behavior. Suggest manual_hints and preferred_manuals as soft preferences only; do not exclude other manuals.
+Return one flat QueryPlan. Resolve follow-ups from recent conversation while preserving the user's original meaning. Split compound questions into 1-8 independent required_aspects. When the user explicitly lists objects for a comparison, preserve every listed object as its own required aspect. Detect exact manual phrases/headings in exact_phrases. Map indirect wording to canonical Opcenter terminology in canonical_terms and record matched wording in aliases. Generate 1-3 strong search_queries per aspect. Distinguish configuration concepts from runtime behavior. Suggest manual_hints and preferred_manuals as soft preferences only; do not exclude other manuals.
 
 Examples:
 - "How are unique numbers assigned to containers?" -> Numbering Rule, Container, prefix, sequence, suffix.
@@ -35,6 +35,7 @@ EVIDENCE_GRADING_PROMPT = """Grade only the assigned aspect from the supplied ma
 Question: {standalone_question}
 Required aspects: {required_aspects}
 Assigned aspect: {aspect}
+Relationship requirement: {relationship_requirement}
 Evidence summaries:
 {evidence}
 Return one flat EvidenceGrade with one short reason and at most six missing_concepts.
@@ -54,14 +55,15 @@ Partial aspects: {partial_aspects}
 Missing aspects: {missing_aspects}
 EvidenceUnits:
 {evidence}
+Relationship requirements: {relationship_requirements}
 Use this structure when requested:
 {answer_structure}
 Explain supported facts normally. Clearly label incomplete aspects and never invent the missing part.
 For a requested procedure, preserve source order and use numbered steps. Include prerequisites and expected results only when supported; never invent omitted actions.
-Do not turn a general related statement into a formal definition. Label unsupported aspects.
+Do not turn a general related statement into a formal definition. Label unsupported aspects as not established by the retrieved evidence; never claim they are not covered by the manuals unless that is explicitly established. Keep Setup (the modeled machine configuration) distinct from the Resource Setup transaction. Do not infer availability from a status-code name; use its configured Availability value.
 Do not repeat the same fact under reasons and checks.
 A troubleshooting checklist is not a procedure. Preserve exact terms, relevant
-table rows, and configuration/runtime distinctions. Do not emit DOT. Return answer text only."""
+table rows, page-specific scope, and configuration/runtime distinctions. Never invent a named object or rule requested by the user when that exact mechanism is absent from evidence. Do not treat counters or report colors as causes unless evidence explicitly does so. Do not emit DOT. Return answer text only."""
 
 
 ANSWER_VERIFICATION_PROMPT = """Correct the draft using only its cited EvidenceUnits.
@@ -69,12 +71,14 @@ Question: {standalone_question}
 Required aspects: {required_aspects}
 Partial aspects: {partial_aspects}
 Missing aspects: {missing_aspects}
+Relationship requirements: {relationship_requirements}
 Required structure: {answer_structure}
 Draft answer:
 {answer}
 Cited EvidenceUnits:
 {evidence}
-Check every requested aspect. Distinguish a definition from a related capability, an event from a CLF attached to it, and configuration-time from runtime behavior. Do not generalize an object-specific table or procedure. Remove unsupported claims and invalid citations; retain clearly labeled partial answers and keep reasons/checks non-duplicative.
+Check every requested aspect. Distinguish a definition from a related capability, an event from a CLF attached to it, and configuration-time from runtime behavior. Do not generalize an object-specific table or procedure. Remove unsupported claims and invalid citations; retain clearly labeled partial answers and keep reasons/checks non-duplicative. Describe missing support as not established by the retrieved evidence, not as absent from the manuals. Keep Setup distinct from the Resource Setup transaction, and use the configured Availability value rather than assuming a status code must be named Up.
+Do not invent an object or rule named only by the question; if absent, say so and use the evidenced mechanism. For sampling: failed movement uses the Sample Test allow-move option; Switching Rules change inspection levels; Sample Rate Counter counts matching containers started or moved, not samples; colors indicate status; keep selection rules page-scoped.
 Return corrected text only."""
 
 
@@ -103,4 +107,5 @@ Rules:
 6. Keep the diagram focused on the question. Every node and important edge must be traceable to an allowed [S#] citation; include citations in node labels and decision-edge labels.
 7. Return Graphviz DOT only, without Markdown fences. For decisions start with: digraph G {{ rankdir=TB; node [fontname="Arial"]; edge [fontname="Arial"]; }}
 8. If fewer than two meaningful relationships are supported, return exactly NO_DIAGRAM.
+9. Treat fields and field values as attributes, not modeling-object containers. Use solid edges only for verified parent-child or sequence relationships and dashed edges for verified optional references.
 Additional verified constraints: {diagram_rules}"""

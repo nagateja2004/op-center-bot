@@ -1,5 +1,7 @@
 import asyncio
 from contextlib import AsyncExitStack
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -8,6 +10,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend import dependencies
 import backend.main as backend_main
+import backend.routes.chat as chat_routes
 
 
 class FakeGraph:
@@ -135,6 +138,54 @@ def test_chat_identifiers_are_both_new_or_both_reused() -> None:
         json={"message": "bad", "thread_id": first["thread_id"]},
     )
     assert invalid.status_code == 422
+
+
+def test_manual_figure_payload_uses_retrieved_manual_page(
+    tmp_path: Path, monkeypatch
+) -> None:
+    figures_dir = tmp_path / "manual_figures"
+    figures_dir.mkdir()
+    image_path = figures_dir / "fig_test.png"
+    image_path.write_bytes(b"png")
+    catalog_path = tmp_path / "manual_figures.json"
+    catalog_path.write_text(
+        json.dumps(
+            [{
+                "figure_id": "fig_test",
+                "manual": "Electronics Guide",
+                "source_file": "electronics.pdf",
+                "pdf_page": 326,
+                "caption": "Resource Modeling Sequence",
+                "path": "manual_figures/fig_test.png",
+            }]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        chat_routes,
+        "settings",
+        SimpleNamespace(
+            manual_figures_path=catalog_path,
+            manual_figures_dir=figures_dir,
+            indexes_dir=tmp_path,
+        ),
+    )
+    chat_routes._load_figure_catalog.cache_clear()
+
+    payload = chat_routes._manual_figure_payload(
+        {
+            "diagram_requested": True,
+            "sources": [{"source_file": "electronics.pdf", "pdf_page": 326}],
+        }
+    )
+
+    assert payload[0]["figure_id"] == "fig_test"
+    assert payload[0]["image_base64"] == "cG5n"
+    corrected = chat_routes._align_answer_with_manual_figures(
+        "**Original manual diagram** – No diagram is included in the cited sections.",
+        payload,
+    )
+    assert corrected == "**Original manual diagram** – Shown below."
 
 
 def test_postgres_pool_opens_once_and_closes_cleanly(monkeypatch) -> None:

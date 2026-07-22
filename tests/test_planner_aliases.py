@@ -43,6 +43,12 @@ import src.nodes as nodes
             "Recipe Pattern",
         ),
         (
+            "Explain the resource-modeling sequence from resource categories and families.",
+            {"Resource Modeling Sequence", "Resource"},
+            "Execution Electronics",
+            "Resource Modeling Sequence",
+        ),
+        (
             "What are Portal Studio controls?",
             {"Portal Studio Control"},
             "Portal Studio",
@@ -72,10 +78,13 @@ def test_alias_catalog_contains_required_concepts() -> None:
     catalog = nodes._concept_catalog()
 
     assert {
-        "Numbering Rule", "Physical Modeling Sequence", "Factory Hierarchy",
+        "Numbering Rule", "Physical Modeling Sequence", "Resource Modeling Sequence", "Factory Hierarchy",
+        "Factory Level", "Inventory Location", "Equipment Resource",
         "Information Model", "Physical Model", "Process Model", "Execution Model",
         "CDO", "CLF", "Scalar Field", "List Field", "Field Event", "Validate Event",
         "Portal Studio Control", "Web Part", "Role", "Permission", "Employee",
+        "Resource Family", "Resource Group", "Work Center", "Setup", "Resource Setup",
+        "Recipe Matrix", "Resource Status Model",
         "Security Server", "SSL", "Resource", "Resource Group", "Spec", "Workflow",
         "Sampling Plan", "Sample Test", "Move Transaction", "Container", "Recipe",
         "Recipe Pattern",

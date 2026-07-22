@@ -16,6 +16,7 @@ from src.ingest import (
     _evidence_specs,
     _effective_embedding_limit,
     _finish_ingestion_audit,
+    _extract_manual_figures,
     _build_concept_index,
     _build_heading_index,
     _build_search_representations,
@@ -368,6 +369,31 @@ def test_noncontent_pages_and_image_only_captions_are_detected() -> None:
     assert not _image_only_caption(
         "Figure behavior is configured by events and methods in this explanatory paragraph."
     )
+
+
+def test_manual_diagrams_are_extracted_to_sidecar_catalog(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "manual.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Modeling Sequence", fontsize=18)
+    page.insert_text((72, 105), "This diagram shows the recommended resource sequence.")
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 200, 60), False)
+    pixmap.clear_with(0xDDEEFF)
+    page.insert_image(fitz.Rect(72, 125, 472, 245), stream=pixmap.tobytes("png"))
+    doc.set_metadata({"title": "Resource Manual"})
+    doc.save(pdf_path)
+    doc.close()
+    config = Settings(
+        groq_api_key="test",
+        manuals_dir=tmp_path,
+        indexes_dir=tmp_path / "indexes",
+    )
+
+    assert _extract_manual_figures([pdf_path], config) == 1
+    catalog = ingest._load_json(config.manual_figures_path, [])
+    assert catalog[0]["source_file"] == "manual.pdf"
+    assert catalog[0]["pdf_page"] == 1
+    assert (config.indexes_dir / catalog[0]["path"]).exists()
 
 
 def test_toc_entries_are_excluded_while_matching_body_is_retained(tmp_path: Path) -> None:

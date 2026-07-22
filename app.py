@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 from typing import Any, Iterator
@@ -134,6 +136,16 @@ def render_artifacts(message: dict[str, Any], show_sources: bool) -> None:
         if evidence.get("sections"):
             details.append(f"Sections: {', '.join(evidence['sections'][:3])}")
         st.caption(" · ".join(details))
+    for figure in message.get("manual_figures", []):
+        try:
+            image = base64.b64decode(figure.get("image_base64", ""), validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        if image:
+            caption = figure.get("caption") or "Diagram from the manual"
+            manual = figure.get("manual") or "Opcenter manual"
+            page = figure.get("pdf_page") or "—"
+            st.image(image, caption=f"{caption} — {manual}, PDF page {page}")
     diagram = message.get("diagram", {})
     if diagram.get("generated") and diagram.get("dot"):
         st.graphviz_chart(diagram["dot"], width="stretch")
@@ -224,6 +236,7 @@ if prompt:
                 "sources": completed.get("sources", []),
                 "evidence": completed.get("evidence", {}),
                 "diagram": completed.get("diagram", {}),
+                "manual_figures": completed.get("manual_figures", []),
             }
             st.session_state.messages.append(assistant_message)
             render_artifacts(assistant_message, show_sources)

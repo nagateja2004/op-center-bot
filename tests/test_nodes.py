@@ -174,12 +174,14 @@ def test_planner_queries_and_canonical_terms_reach_aspect_retrieval(monkeypatch)
     nodes.retrieve_documents(state)
 
     assert "Physical Modeling Sequence" in state["entities"]
-    assert calls == [
-        (
-            "What is the hierarchy of physical modelling?",
-            state["aspect_queries"]["physical modeling hierarchy"],
-        )
-    ]
+    assert calls[0] == (
+        "What is the hierarchy of physical modelling?",
+        state["aspect_queries"]["physical modeling hierarchy"],
+    )
+    assert calls[1] == (
+        nodes._relationship_query(["physical modeling hierarchy"]),
+        ["What is the hierarchy of physical modelling?"],
+    )
     assert set(planner_queries).issubset(calls[0][1])
 
 
@@ -235,7 +237,7 @@ def test_regression_question_is_primary_fusion_query(monkeypatch, question) -> N
         }
     )
 
-    assert calls == [question, question]
+    assert calls == ["first aspect", "second aspect"]
     assert set(update["aspect_documents"]) == {"first aspect", "second aspect"}
 
 
@@ -423,7 +425,7 @@ def test_retry_retrieves_only_missing_aspects(monkeypatch) -> None:
         }
     )
 
-    assert calls == [("Question", ["B"])]
+    assert calls == [("missing", ["B"])]
     assert update["aspect_documents"]["supported"][0]["chunk_id"] == "chunk-1"
 
 
@@ -450,10 +452,10 @@ def test_reranking_is_per_aspect_and_final_evidence_is_capped(monkeypatch) -> No
     )
 
     assert calls == [
-        "Question\nRequired aspect: A",
-        "Question\nRequired aspect: B",
-        "Question\nRequired aspect: C",
-        "Question\nRequired aspect: D",
+        "A",
+        "B",
+        "C",
+        "D",
     ]
     assert all(len(items) == 3 for items in update["aspect_documents"].values())
     assert len(update["reranked_docs"]) == 8
@@ -463,6 +465,46 @@ def test_reranking_is_per_aspect_and_final_evidence_is_capped(monkeypatch) -> No
         for aspect, items in update["aspect_documents"].items()
         for item in items
     )
+
+
+def test_relationship_merge_prioritizes_evidence_shared_by_multiple_aspects() -> None:
+    aspect_documents = {
+        "Factory": [document(1), document(9)],
+        "Resource": [document(2), document(9)],
+        "Work Center": [document(3)],
+    }
+
+    merged = nodes._merge_aspect_documents(
+        aspect_documents, limit=4, prefer_shared=True
+    )
+
+    assert merged[0]["chunk_id"] == "chunk-9"
+    assert set(merged[0]["metadata"]["aspects"]) == {"Factory", "Resource"}
+
+
+def test_direct_parent_reference_scores_above_entity_cooccurrence() -> None:
+    direct = document(1)
+    direct["text"] = "Set the Parent Resource to the Area resource."
+    generic = document(2)
+    generic["text"] = "Resource and Area overview."
+
+    assert nodes._relationship_evidence_score(direct) > nodes._relationship_evidence_score(generic)
+
+
+def test_relationship_merge_keeps_only_best_shared_relation_candidate() -> None:
+    weak = document(8)
+    strong = document(9)
+    strong["text"] = "The child references its Parent Resource in the parent-child hierarchy."
+    merged = nodes._merge_aspect_documents(
+        {
+            "Resource": [document(1)],
+            nodes.RELATIONSHIP_EVIDENCE_ASPECT: [weak, strong],
+        },
+        limit=3,
+        prefer_shared=True,
+    )
+
+    assert merged[0]["chunk_id"] == "chunk-9"
 
 
 def test_broaden_query_allows_only_one_retry(monkeypatch) -> None:
@@ -769,6 +811,92 @@ def test_diagram_failure_does_not_fail_verified_answer(monkeypatch) -> None:
         "diagram_error": "unavailable_model",
         "diagram_generated": False,
     }
+
+
+def test_sampling_guardrails_remove_unsupported_blocking_claims() -> None:
+    documents = [
+        {
+            "text": "Sample tests allow a move even if the container fails sampling.",
+        },
+        {
+            "text": (
+                "The Sample Rate Counter is incremented whenever a matching container "
+                "is started, moved, or moved in."
+            ),
+        },
+    ]
+    answer = (
+        "A Failure Movement Rule blocks the Move [S1].\n"
+        "The Sample Rate Counter must reach the number of samples collected [S2]."
+    )
+    question = (
+        "How do Current Spec, Sampling Plan, sampling status, and Move transaction "
+        "determine whether a container remains Movement Blocked?"
+    )
+
+    corrected = nodes._apply_sampling_guardrails(answer, documents, question)
+
+    assert "do not define a separate Failure Movement Rule" in corrected
+    assert "not a count of collected samples" in corrected
+    assert "blocks the Move" not in corrected
+
+
+def test_explicit_modeling_runtime_comparison_preserves_all_eight_objects() -> None:
+    question = (
+        "Compare what is configured in Modeling with what happens at runtime. "
+        "Cover Resource, Resource Family, Resource Group, Spec, Work Center, "
+        "Setup, Recipe Matrix, and Resource Status Model."
+    )
+
+    assert nodes._required_aspects(question, ["Resource relationship"]) == [
+        "Resource",
+        "Resource Family",
+        "Resource Group",
+        "Spec",
+        "Work Center",
+        "Setup",
+        "Recipe Matrix",
+        "Resource Status Model",
+    ]
+
+
+def test_relationship_question_preserves_named_concepts_and_relation_queries(
+    monkeypatch,
+) -> None:
+    question = (
+        "Explain how Enterprise, Factory, Factory Level, Inventory Location, Resource, "
+        "Resource Group, Work Center, and equipment resources are related. Distinguish "
+        "actual parent-child relationships from optional references and include a hierarchy diagram."
+    )
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: QueryPlan(
+            standalone_question=question,
+            intent="relationship",
+            required_aspects=["factory hierarchy"],
+            search_queries=[question],
+        ),
+    )
+
+    state = nodes.understand_question({"messages": [HumanMessage(content=question)]})
+
+    assert state["relationship_mode"] is True
+    assert state["required_aspects"] == [
+        "Enterprise",
+        "Factory",
+        "Factory Level",
+        "Inventory Location",
+        "Resource",
+        "Resource Group",
+        "Work Center",
+        "Equipment Resource",
+    ]
+    assert "comparison_table" in state["required_output"]
+    assert all(
+        any("parent child" in query for query in state["aspect_queries"][aspect])
+        for aspect in state["required_aspects"]
+    )
 
 
 def test_invalid_diagram_uses_cited_numbered_steps(monkeypatch) -> None:

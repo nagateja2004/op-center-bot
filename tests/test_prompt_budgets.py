@@ -97,6 +97,7 @@ def test_answer_budget_keeps_one_unique_source_per_supported_aspect() -> None:
             partial_aspects="none",
             missing_aspects="none",
             evidence=evidence,
+            relationship_requirements="none",
             answer_structure="- Direct explanation",
         ),
         settings.answer_input_token_budget,

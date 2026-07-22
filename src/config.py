@@ -151,6 +151,14 @@ class Settings:
         return self.indexes_dir / "ingestion_audit.json"
 
     @property
+    def manual_figures_path(self) -> Path:
+        return self.indexes_dir / "manual_figures.json"
+
+    @property
+    def manual_figures_dir(self) -> Path:
+        return self.indexes_dir / "manual_figures"
+
+    @property
     def alias_config_path(self) -> Path:
         return ROOT_DIR / "config" / "opcenter_aliases.json"
 

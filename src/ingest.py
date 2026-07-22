@@ -59,6 +59,10 @@ IMAGE_CAPTION_RE = re.compile(
     r"(?:[A-Z]?\d[\w.-]*|[ivxlcdm]+)\b\s*[:.-]?",
     re.I,
 )
+FIGURE_PAGE_RE = re.compile(
+    r"\b(?:diagram|illustration|flow[ -]?chart|modeling sequence|relationship map)\b",
+    re.I,
+)
 STEP_RE = re.compile(r"^\s*(\d{1,3})[.)]\s+", re.M)
 STEP_MARKER_RE = re.compile(r"^\s*(\d{1,3})[.)]\s*$")
 FIELD_RE = re.compile(r"\b(?:field|property|parameter|column|button)s?\b", re.I)
@@ -1541,6 +1545,63 @@ def _write_json(path: Path, value: Any, *, pretty: bool = False) -> None:
     temporary.replace(path)
 
 
+def _figure_caption(page: fitz.Page, bbox: fitz.Rect) -> str:
+    candidates: list[tuple[float, str]] = []
+    for block in page.get_text("blocks", sort=True):
+        text = _clean(block[4])
+        if not text or not FIGURE_PAGE_RE.search(text):
+            continue
+        block_box = fitz.Rect(block[:4])
+        distance = min(abs(bbox.y0 - block_box.y1), abs(block_box.y0 - bbox.y1))
+        candidates.append((distance, text))
+    return min(candidates, default=(0, "Diagram from the manual"))[1][:240]
+
+
+def _extract_manual_figures(pdf_paths: Sequence[Path], config: Settings) -> int:
+    """Build a sidecar catalog of manual diagrams without changing retrieval records."""
+    config.manual_figures_dir.mkdir(parents=True, exist_ok=True)
+    catalog: list[dict[str, Any]] = []
+    expected_files: set[str] = set()
+    for pdf_path in pdf_paths:
+        with fitz.open(pdf_path) as doc:
+            manual = _clean((doc.metadata or {}).get("title")) or pdf_path.stem
+            for page_index, page in enumerate(doc):
+                for image_index, info in enumerate(page.get_image_info(xrefs=True)):
+                    bbox = fitz.Rect(info["bbox"])
+                    if bbox.width < 120 or bbox.height < 40 or bbox.get_area() < 5_000:
+                        continue
+                    identity = f"{pdf_path.name}:{page_index + 1}:{image_index}:{tuple(bbox)}"
+                    figure_id = f"fig_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+                    xref = int(info.get("xref", 0))
+                    extracted = doc.extract_image(xref) if xref else {}
+                    extension = str(extracted.get("ext", "")).casefold()
+                    image = extracted.get("image", b"")
+                    if extension not in {"png", "jpg", "jpeg"} or not image:
+                        extension = "png"
+                        image = page.get_pixmap(
+                            matrix=fitz.Matrix(1.5, 1.5), clip=bbox, alpha=False
+                        ).tobytes("png")
+                    filename = f"{figure_id}.{extension}"
+                    output_path = config.manual_figures_dir / filename
+                    output_path.write_bytes(image)
+                    expected_files.add(filename)
+                    catalog.append(
+                        {
+                            "figure_id": figure_id,
+                            "manual": manual,
+                            "source_file": pdf_path.name,
+                            "pdf_page": page_index + 1,
+                            "caption": _figure_caption(page, bbox),
+                            "path": f"manual_figures/{filename}",
+                        }
+                    )
+    for stale in config.manual_figures_dir.iterdir():
+        if stale.is_file() and stale.name not in expected_files:
+            stale.unlink()
+    _write_json(config.manual_figures_path, catalog, pretty=True)
+    return len(catalog)
+
+
 def _indexable_segments(
     segments: list[RetrievalSegment],
     config: Settings | None = None,
@@ -1887,6 +1948,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
     pdf_paths = sorted(config.manuals_dir.glob("*.pdf"))
     if not pdf_paths:
         raise FileNotFoundError(f"No PDF manuals found in {config.manuals_dir}")
+    manual_figure_count = _extract_manual_figures(pdf_paths, config)
     current_files = {path.name for path in pdf_paths}
     removed = sorted(set(old_entries) - current_files)
 
@@ -2003,6 +2065,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         "heading_record_count": len(heading_index),
         "concept_record_count": len(concept_index),
         "ingestion_audit_manual_count": len(audits),
+        "manual_figure_count": manual_figure_count,
         "effective_embedding_token_limit": _effective_embedding_limit(config),
         "chroma_collection": CHROMA_COLLECTION,
         "representation_chroma_collection": REPRESENTATION_COLLECTION,

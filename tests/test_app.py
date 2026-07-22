@@ -65,10 +65,16 @@ def test_streamlit_streams_only_the_verified_final_answer() -> None:
 def test_diagram_renderer_requires_generated_state(monkeypatch) -> None:
     app_module = importlib.import_module("app")
     rendered: list[str] = []
+    images: list[bytes] = []
     monkeypatch.setattr(
         app_module.st,
         "graphviz_chart",
         lambda dot, **kwargs: rendered.append(dot),
+    )
+    monkeypatch.setattr(
+        app_module.st,
+        "image",
+        lambda image, **kwargs: images.append(image),
     )
 
     app_module.render_artifacts(
@@ -76,11 +82,15 @@ def test_diagram_renderer_requires_generated_state(monkeypatch) -> None:
         show_sources=False,
     )
     app_module.render_artifacts(
-        {"diagram": {"generated": True, "dot": "digraph G { a -> b; }"}},
+        {
+            "diagram": {"generated": True, "dot": "digraph G { a -> b; }"},
+            "manual_figures": [{"image_base64": "aW1hZ2U="}],
+        },
         show_sources=False,
     )
 
     assert rendered == ["digraph G { a -> b; }"]
+    assert images == [b"image"]
 
 
 def test_progress_labels_are_safe_and_user_facing() -> None:
