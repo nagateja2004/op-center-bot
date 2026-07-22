@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
+import inspect
 import json
 import logging
+import math
 import re
 from typing import Any
 
@@ -13,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from src.compression import compress_evidence
 from src.config import ROOT_DIR, settings
 from src.llm import GroqRequestError, call_llm, call_structured
+from src.inference import embedding_gate, reranker_gate
 from src.prompts import (
     ANSWER_GENERATION_PROMPT,
     ANSWER_VERIFICATION_PROMPT,
@@ -38,6 +42,11 @@ from src.schemas import (
 
 
 DIAGRAM_RE = re.compile(r"\b(?:hierarch\w*|process|workflow|architecture|relationship)\b", re.I)
+EXPLICIT_DIAGRAM_RE = re.compile(
+    r"\b(?:diagrams?|flow[ -]?charts?|visuali[sz]e|draw|relationship map|tree diagram)\b",
+    re.I,
+)
+MAX_DIAGRAM_DOT_LENGTH = 20_000
 logger = logging.getLogger(__name__)
 ALIAS_CONFIG_PATH = ROOT_DIR / "config" / "opcenter_aliases.json"
 DOMAIN_CONCEPTS = {
@@ -117,23 +126,97 @@ SAMPLING_REJECTED_NODES = {
 }
 
 
-def understand_question(state: RAGState) -> RAGState:
+def detect_explicit_diagram_request(question: str) -> tuple[bool, str]:
+    """Detect an explicit diagram request without relying on the planner model."""
+    requested = bool(EXPLICIT_DIAGRAM_RE.search(question))
+    if not requested:
+        return False, "auto"
+    if re.search(r"\bdecision(?:[ -]+flow)?(?:[ -]+diagram|[ -]+flow[ -]?chart)\b", question, re.I):
+        return True, "decision"
+    if re.search(r"\b(?:flow[ -]?chart|process(?:[ -]+flow)?[ -]+diagram|process[ -]+flow)\b", question, re.I):
+        return True, "process"
+    if re.search(r"\b(?:hierarch\w*[ -]+diagram|tree[ -]+diagram)\b", question, re.I):
+        return True, "hierarchy"
+    if re.search(r"\brelationship(?:[ -]+diagram|[ -]+map)\b", question, re.I):
+        return True, "relationship"
+    if re.search(r"\barchitecture[ -]+diagram\b", question, re.I):
+        return True, "architecture"
+    for diagram_type in ("decision", "process", "hierarchy", "relationship", "architecture"):
+        if re.search(rf"\b{diagram_type}\b", question, re.I):
+            return True, diagram_type
+    return True, "auto"
+
+
+def basic_chat_response(question: str) -> str | None:
+    """Return a deterministic response for short conversational messages."""
+    normalized = " ".join(re.sub(r"[^a-z0-9\s]", " ", question.casefold()).split())
+    if normalized in {
+        "hi", "hii", "hello", "hellow", "hey", "hi there", "hello there",
+        "good morning", "good afternoon", "good evening",
+    }:
+        return (
+            "Hello! Ask me anything about the indexed Opcenter manuals. I can "
+            "explain concepts, provide steps, cite sources, and create diagrams."
+        )
+    if normalized in {"thanks", "thank you", "thankyou", "thx"}:
+        return "You're welcome! Ask another Opcenter question whenever you're ready."
+    if normalized in {"bye", "goodbye", "see you", "see you later"}:
+        return "Goodbye! Come back whenever you need help with Opcenter."
+    if normalized in {"how are you", "how are you doing"}:
+        return "I'm ready to help with questions about your indexed Opcenter manuals."
+    if normalized in {"help", "what can you do", "who are you"}:
+        return (
+            "I answer questions from the indexed Opcenter manuals. I can explain "
+            "concepts, list requested steps, cite manual sources, and generate useful diagrams."
+        )
+    return None
+
+
+async def aunderstand_question(state: RAGState) -> RAGState:
     messages = list(state.get("messages", []))[-6:]
     question = _latest_user_text(messages)
-    prompt = QUERY_PLANNING_PROMPT.format(
-        question=question,
-        conversation=_format_messages(_relevant_messages(messages, question)),
-        manual_names=" | ".join(_available_manual_names()) or "none",
-        supported_output_types=SUPPORTED_OUTPUT_TYPES,
-    )
-    try:
-        plan = call_structured(
-            _trim_to_token_budget(prompt, settings.planner_input_token_budget),
-            QueryPlan,
-            task="planner",
-        )
-    except GroqRequestError:
+    conversational_answer = basic_chat_response(question)
+    if conversational_answer:
+        return {
+            "basic_chat": True,
+            "standalone_question": question,
+            "answer": conversational_answer,
+            "sources": [],
+            "grounded": False,
+            "retrieved_docs": [],
+            "expanded_docs": [],
+            "reranked_docs": [],
+            "aspect_documents": {},
+            "compressed_views": {},
+            "diagram_requested": False,
+            "diagram_useful": False,
+            "diagram_dot": "",
+            "diagram_error": "",
+            "diagram_generated": False,
+            "retry_count": 0,
+        }
+    diagram_requested, requested_diagram_type = detect_explicit_diagram_request(question)
+    diagram_override = state.get("diagram_type_override", "auto")
+    if diagram_override != "auto":
+        diagram_requested, requested_diagram_type = True, diagram_override
+    diagram_enabled = state.get("diagram_enabled", state.get("allow_diagrams", True))
+    if _simple_direct_question(question, messages):
         plan = _deterministic_plan(question)
+    else:
+        prompt = QUERY_PLANNING_PROMPT.format(
+            question=question,
+            conversation=_format_messages(_relevant_messages(messages, question)),
+            manual_names=" | ".join(_available_manual_names()) or "none",
+            supported_output_types=SUPPORTED_OUTPUT_TYPES,
+        )
+        try:
+            plan = await _await_maybe(call_structured(
+                _trim_to_token_budget(prompt, settings.planner_input_token_budget),
+                QueryPlan,
+                task="planner",
+            ))
+        except GroqRequestError:
+            plan = _deterministic_plan(question)
     standalone = plan.standalone_question.strip() or question
     domain = _merge_plan_domain(
         question,
@@ -141,6 +224,11 @@ def understand_question(state: RAGState) -> RAGState:
         plan,
     )
     required_output = _required_output(standalone, plan.required_output, plan.intent)
+    diagram_useful = bool(
+        plan.needs_diagram
+        or "diagram" in required_output
+        or DIAGRAM_RE.search(standalone)
+    )
     aspects = _required_aspects(standalone, plan.required_aspects)
     required_manuals = _required_manuals(standalone)
     entities = _unique_text([*plan.entities, *domain["canonical_terms"]])
@@ -167,11 +255,14 @@ def understand_question(state: RAGState) -> RAGState:
         *plan.preferred_manuals,
     ])
     logger.info(
-        "question_domain status=%s terms=%s canonical=%s aliases=%s aspects=%s manuals=%s",
-        domain["domain_status"], domain["domain_terms"], domain["canonical_terms"],
-        domain["aliases"], aspect_queries, preferred_manuals,
+        "question_domain status=%s term_count=%d canonical_count=%d alias_count=%d "
+        "aspect_count=%d manuals=%s",
+        domain["domain_status"], len(domain["domain_terms"]),
+        len(domain["canonical_terms"]), len(domain["aliases"]), len(aspect_queries),
+        preferred_manuals,
     )
     return {
+        "basic_chat": False,
         "standalone_question": standalone,
         "exact_phrases": list(plan.exact_phrases),
         **domain,
@@ -184,11 +275,11 @@ def understand_question(state: RAGState) -> RAGState:
         "search_queries": queries,
         "manual_filters": {"manuals": preferred_manuals},
         "required_manuals": required_manuals,
-        "needs_diagram": (
-            plan.needs_diagram
-            or "diagram" in required_output
-            or bool(DIAGRAM_RE.search(standalone))
-        ),
+        "needs_diagram": diagram_requested or diagram_useful,
+        "diagram_requested": diagram_requested,
+        "requested_diagram_type": requested_diagram_type,
+        "diagram_enabled": bool(diagram_enabled),
+        "diagram_useful": diagram_useful,
         "retry_count": 0,
         "missing_aspects": [],
         "missing_concepts": [],
@@ -205,7 +296,9 @@ def understand_question(state: RAGState) -> RAGState:
         "sources": [],
         "grounded": False,
         "unsupported_claims": [],
-        "diagram_dot": None,
+        "diagram_dot": "",
+        "diagram_error": "",
+        "diagram_generated": False,
         "diagram_supported": False,
         "llm_error_role": "",
     }
@@ -243,11 +336,9 @@ def retrieve_documents(state: RAGState) -> RAGState:
             intent=f"{state.get('intent', '')} {aspect}",
         )
         logger.info(
-            "aspect_retrieval standalone=%r aspect=%r queries=%s headings=%s concepts=%s "
-            "preferred=%s fused=%s evidence_ids=%s",
-            state["standalone_question"],
-            aspect,
-            queries,
+            "aspect_retrieval query_count=%d headings=%s concepts=%s preferred=%s "
+            "fused=%s evidence_ids=%s",
+            len(queries),
             _matched_values(documents, "matched_heading"),
             _matched_values(documents, "matched_concept"),
             _manual_preferences(state.get("manual_filters", {})),
@@ -261,6 +352,11 @@ def retrieve_documents(state: RAGState) -> RAGState:
         "aspect_documents": aspect_documents,
         "retrieved_docs": _merge_aspect_documents(aspect_documents, limit=60),
     }
+
+
+async def aretrieve_documents(state: RAGState) -> RAGState:
+    async with embedding_gate.slot():
+        return await asyncio.to_thread(retrieve_documents, state)
 
 
 def expand_context(state: RAGState) -> RAGState:
@@ -316,9 +412,7 @@ def rerank_documents(state: RAGState) -> RAGState:
     )
     for aspect, aspect_results in aspect_documents.items():
         logger.info(
-            "aspect_rerank standalone=%r aspect=%r sections=%s evidence_ids=%s",
-            standalone,
-            aspect,
+            "aspect_rerank sections=%s evidence_ids=%s",
             _section_names(aspect_results),
             _evidence_ids(aspect_results),
         )
@@ -329,7 +423,12 @@ def rerank_documents(state: RAGState) -> RAGState:
     }
 
 
-def grade_evidence(state: RAGState) -> RAGState:
+async def arerank_documents(state: RAGState) -> RAGState:
+    async with reranker_gate.slot():
+        return await asyncio.to_thread(rerank_documents, state)
+
+
+async def agrade_evidence(state: RAGState) -> RAGState:
     coverage: dict[str, str] = {}
     reasons: list[str] = []
     missing_concepts: list[str] = []
@@ -361,7 +460,7 @@ def grade_evidence(state: RAGState) -> RAGState:
             reasons.append(f"{aspect}: no manual evidence was retrieved")
             continue
         try:
-            grade = call_structured(
+            grade = await _await_maybe(call_structured(
                 _trim_to_token_budget(
                     EVIDENCE_GRADING_PROMPT.format(
                         standalone_question=state["standalone_question"],
@@ -374,7 +473,7 @@ def grade_evidence(state: RAGState) -> RAGState:
                 EvidenceGrade,
                 task="grader",
                 evidence_count=min(2, len(documents)),
-            )
+            ))
         except GroqRequestError:
             grade = _heuristic_grade(state, aspect, documents)
         status = grade.status
@@ -429,7 +528,7 @@ def grade_evidence(state: RAGState) -> RAGState:
     }
 
 
-def broaden_query(state: RAGState) -> RAGState:
+async def abroaden_query(state: RAGState) -> RAGState:
     retry_count = state.get("retry_count", 0)
     if retry_count >= settings.max_retries:
         return {
@@ -456,7 +555,7 @@ def broaden_query(state: RAGState) -> RAGState:
     )
     try:
         broadened = _plain_lines(
-            _message_content(call_llm(prompt, task="query_broadening"))
+            _message_content(await _await_maybe(call_llm(prompt, task="query_broadening")))
         )
     except GroqRequestError:
         broadened = []
@@ -483,7 +582,7 @@ def broaden_query(state: RAGState) -> RAGState:
     }
 
 
-def generate_answer(state: RAGState) -> RAGState:
+async def agenerate_answer(state: RAGState) -> RAGState:
     documents = state.get("reranked_docs", [])
     if state.get("evidence_status") not in {"sufficient", "partial"} or not documents:
         return generate_fallback(state)
@@ -530,7 +629,9 @@ def generate_answer(state: RAGState) -> RAGState:
         answer = _remove_invalid_citations(
             _normalize_citations(
                 _message_content(
-                    call_llm(prompt, task="answer", evidence_count=len(documents))
+                    await _await_maybe(
+                        call_llm(prompt, task="answer", evidence_count=len(documents))
+                    )
                 ).strip()
             ),
             len(documents),
@@ -551,7 +652,7 @@ def generate_answer(state: RAGState) -> RAGState:
     }
 
 
-def verify_answer(state: RAGState) -> RAGState:
+async def averify_answer(state: RAGState) -> RAGState:
     documents = state.get("reranked_docs", [])
     draft = state.get("answer", "")
     if state.get("llm_error_role") == "answer":
@@ -588,7 +689,9 @@ def verify_answer(state: RAGState) -> RAGState:
     try:
         corrected = _normalize_citations(
             _message_content(
-                call_llm(prompt, task="verifier", evidence_count=len(cited_numbers))
+                await _await_maybe(
+                    call_llm(prompt, task="verifier", evidence_count=len(cited_numbers))
+                )
             ).strip()
         )
     except GroqRequestError:
@@ -614,30 +717,46 @@ def verify_answer(state: RAGState) -> RAGState:
         "grounded": grounded,
         "unsupported_claims": [],
         "missing_aspects": state.get("missing_aspects", []),
-        "diagram_supported": grounded and state.get("needs_diagram", False),
+        "diagram_supported": grounded and (
+            state.get("diagram_requested", False)
+            or state.get("diagram_useful", state.get("needs_diagram", False))
+        ),
         "messages": [AIMessage(content=answer)],
     }
 
 
-def generate_diagram(state: RAGState) -> RAGState:
+def _diagram_result(dot: str = "", error: str = "") -> RAGState:
+    return {
+        "diagram_dot": dot,
+        "diagram_error": error,
+        "diagram_generated": bool(dot),
+    }
+
+
+async def agenerate_diagram(state: RAGState) -> RAGState:
     question = state.get("standalone_question", "")
     documents = state.get("reranked_docs", [])
+    enabled = state.get("diagram_enabled", state.get("allow_diagrams", True))
+    useful = state.get("diagram_useful", state.get("needs_diagram", False))
     if not (
-        state.get("allow_diagrams", True)
-        and state.get("needs_diagram")
+        enabled
+        and (state.get("diagram_requested", False) or useful)
         and state.get("grounded")
         and documents
     ):
-        return {"diagram_dot": None}
+        return _diagram_result()
     verified_answer = state.get("answer", "")
     cited_numbers = _citation_numbers(verified_answer, len(documents))
+    if not cited_numbers:
+        return _diagram_result(error="no_cited_evidence")
     source_ids = [f"S{number}" for number in cited_numbers]
     cited_documents = [documents[number - 1] for number in cited_numbers]
     support_text = " ".join(
         f"{document['metadata'].get('section', '')} {document['text']}"
         for document in cited_documents
     )
-    diagram_type = _diagram_type(question)
+    requested_type = state.get("requested_diagram_type", "auto")
+    diagram_type = requested_type if requested_type != "auto" else _diagram_type(question)
     entities = _verified_entities(
         state.get("entities", []), verified_answer, question, support_text
     )
@@ -648,10 +767,26 @@ def generate_diagram(state: RAGState) -> RAGState:
     decisions = _verified_decisions(relationships)
     outcomes = _verified_outcomes(question, verified_answer, support_text)
     if sampling_decision and not {"Sampling Plan", "Sample Tests"}.issubset(entities):
-        return {"diagram_dot": None}
+        return _diagram_result(error="insufficient_verified_evidence")
+    coverage = state.get("coverage", {})
+    relevant_aspects = [
+        aspect
+        for aspect in state.get("required_aspects", [])
+        if not coverage or coverage.get(aspect) in {"sufficient", "partial"}
+    ]
+    cited_evidence = _format_cited_evidence(
+        documents,
+        cited_numbers,
+        question,
+        max_chars=max(800, settings.diagram_input_token_budget * 2),
+    )
     prompt = _trim_to_token_budget(
         DIAGRAM_GENERATION_PROMPT.format(
+            standalone_question=question,
             diagram_type=diagram_type,
+            verified_answer=verified_answer,
+            evidence=cited_evidence,
+            relevant_aspects=" | ".join(relevant_aspects) or "none",
             entities=" | ".join(entities),
             relationships="\n".join(relationships),
             decisions="\n".join(decisions) or "none",
@@ -661,13 +796,19 @@ def generate_diagram(state: RAGState) -> RAGState:
         ),
         settings.diagram_input_token_budget,
     )
-    direction = "TB" if re.search(r"\bhierarch\w*\b", question, re.I) else "LR"
+    direction = "TB" if diagram_type in {"decision", "hierarchy"} else "LR"
     try:
         dot = _message_content(
-            call_llm(prompt, task="diagram", evidence_count=len(source_ids))
+            await _await_maybe(
+                call_llm(prompt, task="diagram", evidence_count=len(source_ids))
+            )
         )
-    except GroqRequestError:
-        return {"diagram_dot": None}
+    except GroqRequestError as exc:
+        logger.info(
+            "diagram_result requested=%s enabled=%s type=%s output_length=0 valid=false failure=%s",
+            state.get("diagram_requested", False), enabled, diagram_type, exc.kind,
+        )
+        return _diagram_result(error=exc.kind)
     diagram = _validated_dot(
         dot,
         direction,
@@ -678,7 +819,26 @@ def generate_diagram(state: RAGState) -> RAGState:
         source_ids=set(source_ids),
         decision_diagram=sampling_decision,
     )
-    return {"diagram_dot": diagram}
+    if not diagram and not sampling_decision:
+        fallback = _cited_step_diagram(verified_answer, direction, set(source_ids))
+        fallback_direction = direction
+        if not fallback:
+            fallback = _cited_ascii_hierarchy_diagram(
+                verified_answer, set(source_ids)
+            )
+            fallback_direction = "TB"
+        diagram = _validated_dot(
+            fallback, fallback_direction, source_ids=set(source_ids)
+        )
+    failure = "" if diagram else (
+        "no_diagram" if dot.strip() == "NO_DIAGRAM" else "invalid_dot"
+    )
+    logger.info(
+        "diagram_result requested=%s enabled=%s type=%s output_length=%s valid=%s failure=%s",
+        state.get("diagram_requested", False), enabled, diagram_type, len(dot),
+        bool(diagram), failure or "none",
+    )
+    return _diagram_result(diagram or "", failure)
 
 
 def generate_fallback(state: RAGState) -> RAGState:
@@ -697,7 +857,9 @@ def generate_fallback(state: RAGState) -> RAGState:
         "sources": [],
         "grounded": False,
         "unsupported_claims": [],
-        "diagram_dot": None,
+        "diagram_dot": "",
+        "diagram_error": "",
+        "diagram_generated": False,
         "messages": [AIMessage(content=answer)],
     }
 
@@ -715,10 +877,26 @@ def _format_messages(messages: list[Any]) -> str:
     )
 
 
+def _simple_direct_question(question: str, messages: list[BaseMessage]) -> bool:
+    text = question.strip()
+    return (
+        len(messages) <= 1
+        and len(text.split()) <= 14
+        and bool(re.match(r"^(?:what is|define|explain)\b", text, re.I))
+        and not bool(
+            re.search(
+                r"\b(?:and|or|compare|difference|how|why|across|hierarch\w*|workflow|process|relationship)\b",
+                text,
+                re.I,
+            )
+        )
+    )
+
+
 def _deterministic_plan(question: str) -> QueryPlan:
     lowered = question.casefold()
     domain = _domain_context(question)
-    if re.search(r"\b(?:how do|how to|procedure|steps to|step-by-step)\b", lowered):
+    if re.search(r"\b(?:how do|how to|procedure|steps?|step-by-step)\b", lowered):
         intent = "procedure"
     elif re.search(r"\b(?:compare|difference|versus|vs\.?\b)", lowered):
         intent = "comparison"
@@ -828,7 +1006,7 @@ def _heuristic_grade(
     exact_aspect = aspect_text in combined
     event_requested = "event" in aspect_terms
     procedure_requested = bool(
-        re.search(r"\b(?:how do|how to|procedure|steps to|step-by-step)\b", question, re.I)
+        re.search(r"\b(?:how do|how to|procedure|steps?|step-by-step)\b", question, re.I)
     )
     definition_requested = bool(
         re.search(r"\b(?:what is|what are|define|definition|difference)\b", question, re.I)
@@ -1057,7 +1235,7 @@ def _required_output(question: str, outputs: list[str], intent: str) -> list[str
         required.extend(["likely_reasons", "checks"])
     if re.search(r"\b(?:compare|comparison|difference|versus|vs\.? )\b", text):
         required.append("comparison_table")
-    if re.search(r"\b(?:procedure|how do|how to|steps to|step-by-step)\b", text):
+    if re.search(r"\b(?:procedure|how do|how to|steps?|step-by-step)\b", text):
         required.append("procedure")
     if DIAGRAM_RE.search(text) or re.search(r"\bmodeled\b.*\bbecomes? usable\b", text):
         required.append("diagram")
@@ -1078,11 +1256,22 @@ def _is_sampling_movement_question(question: str) -> bool:
 
 def _required_manuals(question: str) -> list[str]:
     text = question.casefold()
-    return ["Modeling", "Shop Floor"] if "modeling" in text and "shop floor" in text else []
+    required = []
+    if "modeling" in text and "shop floor" in text:
+        required.extend(["Modeling", "Shop Floor"])
+    if re.search(r"\b(?:execution electronics|opcenter electronics|ocexel)\b", text):
+        required.append("Execution Electronics")
+    if re.search(r"\b(?:execution discrete|opcenter discrete|ex[ -]?ds|exds)\b", text):
+        required.append("Execution Discrete")
+    return list(dict.fromkeys(required))
 
 
 def _manual_family(manual: str) -> str:
     lowered = manual.casefold()
+    if "execution electronics" in lowered or "ocexel" in lowered:
+        return "Execution Electronics"
+    if "execution discrete" in lowered or re.search(r"\bex[ -]?ds\b", lowered):
+        return "Execution Discrete"
     if "modeling" in lowered:
         return "Modeling"
     if "shop floor" in lowered:
@@ -1141,11 +1330,19 @@ def _answer_output_labels(
 
 
 def _answer_structure(question: str, required_output: list[str]) -> list[str]:
+    if "comparison_table" in required_output:
+        return ["Direct answer", "Comparison table", "Key differences"]
     if not (
         _is_sampling_movement_question(question)
         or any(item in required_output for item in ("likely_reasons", "checks"))
     ):
-        return ["Direct explanation"]
+        if re.search(r"\b(?:hierarch\w*|relationship|architecture)\b", question, re.I):
+            return ["Direct explanation", "Key entities", "Supported relationships"]
+        return (
+            ["Prerequisites when supported", "Numbered steps", "Expected result when supported"]
+            if "procedure" in required_output
+            else ["Direct explanation"]
+        )
     headings = [
         "Direct explanation",
         "Configuration relationship",
@@ -1153,6 +1350,8 @@ def _answer_structure(question: str, required_output: list[str]) -> list[str]:
         "Likely reasons movement is blocked",
         "What to check",
     ]
+    if "procedure" in required_output:
+        headings[1:1] = ["Prerequisites when supported", "Numbered steps"]
     if "diagram" in required_output:
         headings.append("Decision diagram")
     headings.append("Release note when cited releases differ")
@@ -1585,14 +1784,108 @@ def _verified_relationships(answer: str) -> list[str]:
     ][:8]
 
 
+def _cited_step_diagram(answer: str, direction: str, source_ids: set[str]) -> str:
+    """Turn an answer's cited numbered steps into a safe visual fallback."""
+    steps: list[tuple[str, list[str]]] = []
+    for match in re.finditer(
+        r"(?ms)^\s*\d+[.)]\s+\*\*(?P<title>[^*\n]+)\*\*(?P<body>.*?)(?=^\s*\d+[.)]\s+\*\*|\Z)",
+        answer,
+    ):
+        citations = list(
+            dict.fromkeys(
+                f"S{number}" for number in CITATION_RE.findall(match.group(0))
+                if f"S{number}" in source_ids
+            )
+        )
+        if citations:
+            title = re.sub(r"\s+", " ", match.group("title")).strip(" -–—")
+            steps.append((title, citations))
+    if len(steps) < 2:
+        return ""
+
+    lines = [
+        "digraph G {",
+        f"  rankdir={direction};",
+        '  graph [bgcolor="#0E1117", pad="0.3", nodesep="0.45", ranksep="0.55"];',
+        '  node [shape=box, style="rounded,filled", fillcolor="#1F2937", color="#60A5FA", fontcolor="#F9FAFB", fontname="Arial", margin="0.18,0.12"];',
+        '  edge [color="#94A3B8", penwidth=1.5, arrowsize=0.8];',
+    ]
+    for index, (title, citations) in enumerate(steps, start=1):
+        cited = " ".join(f"[{citation}]" for citation in citations)
+        label = f"{title}\\n{cited}".replace('"', r'\"')
+        lines.append(f'  step{index} [label="{label}"];')
+    lines.extend(
+        f"  step{index} -> step{index + 1};"
+        for index in range(1, len(steps))
+    )
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _cited_ascii_hierarchy_diagram(answer: str, source_ids: set[str]) -> str:
+    """Convert a cited Markdown tree into boxes when the diagram model fails."""
+    blocks = list(re.finditer(r"```[^\n]*\n(?P<tree>.*?)```", answer, re.S))
+    for block in reversed(blocks):
+        tree = block.group("tree")
+        if not re.search(r"[├└][─-]", tree):
+            continue
+        nearby = answer[block.end():block.end() + 1_200]
+        citations = list(
+            dict.fromkeys(
+                f"S{number}" for number in CITATION_RE.findall(nearby)
+                if f"S{number}" in source_ids
+            )
+        )
+        if not citations:
+            continue
+
+        nodes: list[tuple[str, int]] = []
+        for line in tree.splitlines():
+            branch = re.search(r"[├└][─-]\s*", line)
+            if branch:
+                title = line[branch.end():].strip()
+                depth = math.ceil(len(line[:branch.start()].expandtabs(4)) / 4) + 1
+            else:
+                title = line.strip()
+                depth = 0
+            if title and not re.fullmatch(r"[│\s]+", title):
+                nodes.append((title, depth))
+        if len(nodes) < 2:
+            continue
+
+        cited = " ".join(f"[{citation}]" for citation in citations)
+        lines = [
+            "digraph G {",
+            "  rankdir=TB;",
+            '  graph [bgcolor="#0E1117", pad="0.3", nodesep="0.45", ranksep="0.55"];',
+            '  node [shape=box, style="rounded,filled", fillcolor="#1F2937", color="#60A5FA", fontcolor="#F9FAFB", fontname="Arial", margin="0.18,0.12"];',
+            '  edge [color="#94A3B8", penwidth=1.5, arrowsize=0.8];',
+        ]
+        parents: dict[int, str] = {}
+        previous_depth = 0
+        for index, (title, depth) in enumerate(nodes, start=1):
+            depth = min(depth, previous_depth + 1)
+            node_id = f"node{index}"
+            label = f"{title}\\n{cited}".replace('"', r'\"')
+            lines.append(f'  {node_id} [label="{label}"];')
+            if depth and depth - 1 in parents:
+                lines.append(f"  {parents[depth - 1]} -> {node_id};")
+            parents[depth] = node_id
+            parents = {level: parent for level, parent in parents.items() if level <= depth}
+            previous_depth = depth
+        lines.append("}")
+        return "\n".join(lines)
+    return ""
+
+
 def _verified_entities(
     entities: list[str],
     answer: str,
     question: str = "",
     support_text: str = "",
 ) -> list[str]:
+    verified_text = f"{answer} {support_text}".casefold()
     if _is_sampling_movement_question(question):
-        verified_text = f"{answer} {support_text}".casefold()
         return [
             entity for entity in SAMPLING_ALLOWED_ENTITIES
             if entity.casefold() in verified_text
@@ -1600,7 +1893,10 @@ def _verified_entities(
     extracted = re.findall(
         r"\b(?:[A-Z]{2,}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})\b", answer
     )
-    return _unique_text([*entities, *extracted])[:10]
+    supported_entities = [
+        entity for entity in entities if entity.casefold() in verified_text
+    ]
+    return _unique_text([*supported_entities, *extracted])[:10]
 
 
 def _verified_decisions(relationships: list[str]) -> list[str]:
@@ -1953,20 +2249,43 @@ def _validated_dot(
 ) -> str | None:
     dot = re.sub(r"^```(?:dot|graphviz)?\s*|\s*```$", "", dot.strip(), flags=re.I)
     if (
-        not re.match(r"^digraph\b", dot, re.I)
+        not dot
+        or len(dot) > MAX_DIAGRAM_DOT_LENGTH
+        or dot.casefold() == "no_diagram"
+        or "```" in dot
+        or not re.match(r"^(?:di)?graph\b", dot, re.I)
         or not _balanced_delimiters(dot)
-        or re.search(r"\b(?:image|shapefile|href|url)\s*=", dot, re.I)
+        or not re.search(r"(?:->|--)", dot)
+        or re.search(r"<[^>]+>|\b(?:image|shapefile|href|url)\s*=", dot, re.I)
     ):
         return None
-    node_names = set(
-        re.findall(r'(?m)^\s*("[^"\n]+"|[A-Za-z_][\w.-]*)\s*\[', dot)
-    )
+    declarations = [
+        (name, attributes)
+        for name, attributes in re.findall(
+            r'(?:^|(?<=[;{]))\s*("[^"\n]+"|[A-Za-z_][\w.-]*)\s*\[(.*?)\]\s*;',
+            dot,
+            re.M,
+        )
+        if name.strip('"').casefold() not in {"graph", "node", "edge", "digraph"}
+    ]
+    if len(declarations) < 2:
+        return None
+    node_names = {name for name, _ in declarations}
     node_names.update(
         re.findall(r'(?:->|--)\s*("[^"\n]+"|[A-Za-z_][\w.-]*)', dot)
     )
     node_names -= {"graph", "node", "edge", "digraph"}
-    if not 3 <= len(node_names) <= 10:
+    if not 2 <= len(node_names) <= 20:
         return None
+    if source_ids:
+        for _, attributes in declarations:
+            label_match = re.search(r'label\s*=\s*"([^"]+)"', attributes, re.I)
+            citations = set(CITATION_RE.findall(label_match.group(1))) if label_match else set()
+            if not citations or not {f"S{number}" for number in citations}.issubset(source_ids):
+                return None
+        all_citations = {f"S{number}" for number in CITATION_RE.findall(dot)}
+        if not all_citations.issubset(source_ids):
+            return None
     if decision_diagram and not _valid_sampling_decision_dot(
         dot,
         allowed_entities or set(),
@@ -1978,6 +2297,15 @@ def _validated_dot(
         dot = re.sub(r"rankdir\s*=\s*[A-Za-z]+", f"rankdir={direction}", dot, count=1, flags=re.I)
     else:
         dot = dot.replace("{", f"{{\n  rankdir={direction};", 1)
+    if not re.search(r"\bgraph\s*\[\s*bgcolor\s*=", dot, re.I):
+        dot = dot.replace(
+            "{",
+            "{\n  graph [bgcolor=\"transparent\", pad=0.4, nodesep=0.5, ranksep=0.7];"
+            "\n  node [shape=box, style=\"rounded,filled\", fillcolor=\"#E8F1FF\","
+            " color=\"#2563EB\", fontname=\"Arial\", fontsize=11];"
+            "\n  edge [color=\"#64748B\", fontname=\"Arial\", fontsize=10, arrowsize=0.8];",
+            1,
+        )
     return dot
 
 
@@ -1995,6 +2323,8 @@ def _valid_sampling_decision_dot(
     id_to_label: dict[str, str] = {}
     id_to_shape: dict[str, str] = {}
     for node_id, attributes in declarations:
+        if node_id.strip('"').casefold() in {"graph", "node", "edge"}:
+            continue
         label_match = re.search(r'label\s*=\s*"([^"]+)"', attributes, re.I)
         if not label_match:
             return False
@@ -2058,7 +2388,8 @@ def _valid_sampling_decision_dot(
         if id_to_label[left] not in decision_labels:
             continue
         label_match = re.search(r'label\s*=\s*"([^"]+)"', attributes, re.I)
-        if not label_match or label_match.group(1).casefold() not in {
+        edge_label = CITATION_RE.sub("", label_match.group(1)).strip().casefold() if label_match else ""
+        if edge_label not in {
             "yes", "no", "pass", "fail", "in process"
         }:
             return False
@@ -2087,3 +2418,33 @@ def _balanced_delimiters(dot: str) -> bool:
         elif character in pairs and (not stack or stack.pop() != pairs[character]):
             return False
     return not quoted and not stack
+
+
+async def _await_maybe(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
+
+
+# Compatibility entry points for direct local calls and the existing unit tests.
+# Production LangGraph wiring uses the async variants above.
+def understand_question(state: RAGState) -> RAGState:
+    return asyncio.run(aunderstand_question(state))
+
+
+def grade_evidence(state: RAGState) -> RAGState:
+    return asyncio.run(agrade_evidence(state))
+
+
+def broaden_query(state: RAGState) -> RAGState:
+    return asyncio.run(abroaden_query(state))
+
+
+def generate_answer(state: RAGState) -> RAGState:
+    return asyncio.run(agenerate_answer(state))
+
+
+def verify_answer(state: RAGState) -> RAGState:
+    return asyncio.run(averify_answer(state))
+
+
+def generate_diagram(state: RAGState) -> RAGState:
+    return asyncio.run(agenerate_diagram(state))

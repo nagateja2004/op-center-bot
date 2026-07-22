@@ -1,4 +1,22 @@
 {
+  "Opcenter Execution Electronics": {
+    "aliases": [
+      "execution electronics",
+      "opcenter electronics",
+      "ocexel"
+    ],
+    "manual_hints": ["Execution Electronics"]
+  },
+  "Opcenter Execution Discrete": {
+    "aliases": [
+      "execution discrete",
+      "opcenter discrete",
+      "opcenter ex ds",
+      "ex ds",
+      "exds"
+    ],
+    "manual_hints": ["Execution Discrete"]
+  },
   "Numbering Rule": {
     "aliases": [
       "numbering rules",

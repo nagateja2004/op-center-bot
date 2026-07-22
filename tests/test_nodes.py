@@ -49,6 +49,42 @@ def test_understand_question_uses_latest_six_messages_and_sets_diagram(monkeypat
     assert captured["task"] == "planner"
     assert 2 <= len(update["search_queries"]) <= 4
     assert update["needs_diagram"] is True
+    assert update["diagram_requested"] is False
+    assert update["diagram_useful"] is True
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("Include a decision-flow diagram.", (True, "decision")),
+        ("Explain physical modeling with diagrams.", (True, "auto")),
+        ("Show the process as a flowchart.", (True, "process")),
+        ("Explain physical modeling.", (False, "auto")),
+        ("Explain physical modeling with a hierarchy diagram.", (True, "hierarchy")),
+        ("Draw the configured-object relationship map.", (True, "relationship")),
+    ],
+)
+def test_explicit_diagram_request_detection(question, expected) -> None:
+    assert nodes.detect_explicit_diagram_request(question) == expected
+
+
+def test_diagram_type_override_requests_selected_visual(monkeypatch) -> None:
+    monkeypatch.setattr(
+        nodes,
+        "call_structured",
+        lambda *args, **kwargs: QueryPlan(
+            standalone_question="Show Factory and Resources",
+            intent="relationship",
+        ),
+    )
+
+    update = nodes.understand_question({
+        "messages": [HumanMessage(content="Show Factory and Resources")],
+        "diagram_type_override": "relationship",
+    })
+
+    assert update["diagram_requested"] is True
+    assert update["requested_diagram_type"] == "relationship"
 
 
 def test_new_question_resets_transient_checkpoint_state(monkeypatch) -> None:
@@ -85,6 +121,10 @@ def test_new_question_resets_transient_checkpoint_state(monkeypatch) -> None:
             "grounded": True,
             "unsupported_claims": ["old claim"],
             "diagram_dot": "digraph old {}",
+            "diagram_error": "old error",
+            "diagram_generated": True,
+            "diagram_requested": True,
+            "requested_diagram_type": "decision",
             "diagram_supported": True,
             "llm_error_role": "answer",
         }
@@ -101,7 +141,9 @@ def test_new_question_resets_transient_checkpoint_state(monkeypatch) -> None:
         assert update[field] == {}
     assert update["evidence_reason"] == update["answer"] == update["llm_error_role"] == ""
     assert update["grounded"] is update["diagram_supported"] is False
-    assert update["diagram_dot"] is None
+    assert update["diagram_dot"] == update["diagram_error"] == ""
+    assert update["diagram_generated"] is update["diagram_requested"] is False
+    assert update["requested_diagram_type"] == "auto"
 
 
 def test_planner_queries_and_canonical_terms_reach_aspect_retrieval(monkeypatch) -> None:
@@ -241,6 +283,31 @@ def test_electronic_signatures_are_deterministically_in_scope(monkeypatch) -> No
         "electronic signatures" in query.casefold()
         for query in update["search_queries"]
     )
+
+
+@pytest.mark.parametrize(
+    ("question", "manual"),
+    [
+        ("What is Opcenter Execution Electronics?", "Execution Electronics"),
+        ("How do I create a process step in Opcenter EX DS?", "Execution Discrete"),
+    ],
+)
+def test_new_manual_names_route_to_their_indexed_manual(question, manual) -> None:
+    plan = nodes._deterministic_plan(question)
+
+    assert manual in plan.manual_hints
+    assert nodes._required_manuals(question) == [manual]
+
+
+@pytest.mark.parametrize(
+    ("title", "family"),
+    [
+        ("Opcenter Execution Electronics User Guide", "Execution Electronics"),
+        ("Opcenter Execution Discrete User Manual", "Execution Discrete"),
+    ],
+)
+def test_new_manual_titles_have_stable_families(title, family) -> None:
+    assert nodes._manual_family(title) == family
 
 
 def test_electronic_signatures_cannot_be_downgraded_to_out_of_scope(monkeypatch) -> None:
@@ -515,13 +582,23 @@ def test_malformed_or_external_graphviz_is_rejected() -> None:
     )
 
 
+def test_dot_validation_accepts_valid_and_fenced_dot_but_rejects_non_dot() -> None:
+    dot = 'digraph G { a [label="Start [S1]"]; b [label="Done [S1]"]; a -> b; }'
+
+    assert nodes._validated_dot(dot, "TB", source_ids={"S1"})
+    assert nodes._validated_dot(f"```dot\n{dot}\n```", "TB", source_ids={"S1"})
+    assert nodes._validated_dot("plain prose", "TB") is None
+    assert nodes._validated_dot("NO_DIAGRAM", "TB") is None
+
+
 def test_fallback_messages_are_distinct_and_never_include_diagram() -> None:
     unsupported = nodes.generate_fallback({"evidence_status": "in_scope_insufficient"})
     irrelevant = nodes.generate_fallback({"evidence_status": "out_of_scope"})
 
     assert unsupported["answer"] != irrelevant["answer"]
-    assert unsupported["diagram_dot"] is None
-    assert irrelevant["diagram_dot"] is None
+    assert unsupported["diagram_dot"] == ""
+    assert irrelevant["diagram_dot"] == ""
+    assert unsupported["diagram_generated"] is irrelevant["diagram_generated"] is False
 
 
 def test_compatibility_evidence_is_limited_to_eight_sources() -> None:
@@ -552,7 +629,8 @@ def test_diagram_false_skips_groq(monkeypatch) -> None:
         }
     )
 
-    assert update["diagram_dot"] is None
+    assert update["diagram_dot"] == ""
+    assert update["diagram_generated"] is False
 
 
 def test_planner_failure_uses_deterministic_plan(monkeypatch) -> None:
@@ -571,6 +649,28 @@ def test_planner_failure_uses_deterministic_plan(monkeypatch) -> None:
     assert update["standalone_question"] == "How do I define a Factory?"
     assert update["intent"] == "procedure"
     assert "procedure" in update["required_output"]
+
+
+def test_steps_request_requires_numbered_procedure_output() -> None:
+    question = "Give me the steps for creating a process step in Opcenter EX DS."
+    plan = nodes._deterministic_plan(question)
+
+    assert plan.intent == "procedure"
+    assert "procedure" in plan.required_output
+    assert nodes._answer_structure(question, plan.required_output) == [
+        "Prerequisites when supported",
+        "Numbered steps",
+        "Expected result when supported",
+    ]
+
+
+def test_output_structures_cover_comparison_and_relationship_questions() -> None:
+    assert nodes._answer_structure("Compare Factory and Area", ["comparison_table"]) == [
+        "Direct answer", "Comparison table", "Key differences",
+    ]
+    assert nodes._answer_structure("Show the Factory relationship", ["explanation"]) == [
+        "Direct explanation", "Key entities", "Supported relationships",
+    ]
 
 
 def test_grader_failure_uses_heuristic_coverage(monkeypatch) -> None:
@@ -664,7 +764,65 @@ def test_diagram_failure_does_not_fail_verified_answer(monkeypatch) -> None:
         }
     )
 
-    assert update == {"diagram_dot": None}
+    assert update == {
+        "diagram_dot": "",
+        "diagram_error": "unavailable_model",
+        "diagram_generated": False,
+    }
+
+
+def test_invalid_diagram_uses_cited_numbered_steps(monkeypatch) -> None:
+    monkeypatch.setattr(nodes, "call_llm", lambda *args, **kwargs: AIMessage(content="not DOT"))
+    docs = [document(1), document(2)]
+
+    update = nodes.generate_diagram(
+        {
+            "standalone_question": "Explain physical modeling with diagrams",
+            "diagram_requested": True,
+            "diagram_enabled": True,
+            "grounded": True,
+            "answer": (
+                "1. **Identify physical scope**\nChoose the hierarchy [S1].\n\n"
+                "2. **Create resources**\nDefine the supported resources [S1] [S2]."
+            ),
+            "reranked_docs": docs,
+            "entities": ["Factory", "Resource"],
+        }
+    )
+
+    assert update["diagram_generated"] is True
+    assert update["diagram_error"] == ""
+    assert 'shape=box' in update["diagram_dot"]
+    assert "Identify physical scope\\n[S1]" in update["diagram_dot"]
+    assert "Create resources\\n[S1] [S2]" in update["diagram_dot"]
+    assert "step1 -> step2" in update["diagram_dot"]
+
+
+def test_invalid_diagram_converts_cited_ascii_hierarchy(monkeypatch) -> None:
+    monkeypatch.setattr(nodes, "call_llm", lambda *args, **kwargs: AIMessage(content="not DOT"))
+
+    update = nodes.generate_diagram(
+        {
+            "standalone_question": "Explain factory hieacrhy with diagram",
+            "diagram_requested": True,
+            "diagram_enabled": True,
+            "grounded": True,
+            "answer": (
+                "```\nEnterprise\n└─ Factory\n   └─ Area\n      ├─ Line\n"
+                "      │  └─ Equipment Resource\n      └─ Inventory Location\n```\n"
+                "This hierarchy is supported [S1]."
+            ),
+            "reranked_docs": [document(1)],
+            "entities": ["Enterprise", "Factory", "Resource"],
+        }
+    )
+
+    assert update["diagram_generated"] is True
+    assert update["diagram_error"] == ""
+    assert "rankdir=TB" in update["diagram_dot"]
+    assert 'label="Enterprise\\n[S1]"' in update["diagram_dot"]
+    assert "node1 -> node2" in update["diagram_dot"]
+    assert "node4 -> node5" in update["diagram_dot"]
 
 
 def test_required_manual_coverage_retries_then_downgrades_to_partial(monkeypatch) -> None:

@@ -57,6 +57,7 @@ EvidenceUnits:
 Use this structure when requested:
 {answer_structure}
 Explain supported facts normally. Clearly label incomplete aspects and never invent the missing part.
+For a requested procedure, preserve source order and use numbered steps. Include prerequisites and expected results only when supported; never invent omitted actions.
 Do not turn a general related statement into a formal definition. Label unsupported aspects.
 Do not repeat the same fact under reasons and checks.
 A troubleshooting checklist is not a procedure. Preserve exact terms, relevant
@@ -77,15 +78,29 @@ Check every requested aspect. Distinguish a definition from a related capability
 Return corrected text only."""
 
 
-DIAGRAM_GENERATION_PROMPT = """Return Graphviz DOT only from these verified facts.
+DIAGRAM_GENERATION_PROMPT = """You generate a focused Graphviz diagram from verified evidence.
+Question: {standalone_question}
 Diagram type: {diagram_type}
+Relevant verified aspects: {relevant_aspects}
+Verified final answer:
+{verified_answer}
+Cited EvidenceUnits only:
+{evidence}
+Allowed citation IDs: {source_ids}
 Verified entities: {entities}
 Verified outcomes: {outcomes}
-Supporting source IDs: {source_ids}
 Verified relationships:
 {relationships}
 Verified decisions:
 {decisions}
+
 Rules:
-{diagram_rules}
-Use 3-10 connected nodes, exact labels, and [S#] citations. Return empty text if insufficient."""
+1. Use only relationships and decisions explicitly supported by the supplied evidence.
+2. Follow the requested type: hierarchy uses top-to-bottom boxes; relationship uses labeled entity arrows; process uses left-to-right ordered actions; architecture groups components and labels data flow; decision uses diamonds, supported Yes/No or Pass/Fail edge labels, and supported outcomes.
+3. Use short labels. Apply rounded filled boxes, light blue fills, blue borders, gray arrows, Arial font, and comfortable node spacing. Do not encode meaning with color alone.
+4. Exclude buttons, pages, tabs, dialog boxes, navigation, and click/save/close instructions unless the user explicitly asks for a UI procedure diagram.
+5. Do not convert every noun phrase into a node or add vague nodes such as related objects, etc., or in Opcenter Execution.
+6. Keep the diagram focused on the question. Every node and important edge must be traceable to an allowed [S#] citation; include citations in node labels and decision-edge labels.
+7. Return Graphviz DOT only, without Markdown fences. For decisions start with: digraph G {{ rankdir=TB; node [fontname="Arial"]; edge [fontname="Arial"]; }}
+8. If fewer than two meaningful relationships are supported, return exactly NO_DIAGRAM.
+Additional verified constraints: {diagram_rules}"""

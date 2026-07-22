@@ -39,6 +39,10 @@ def build(group: SectionGroup):
     )
 
 
+def test_clean_removes_long_table_of_contents_leaders() -> None:
+    assert ingest._clean("3.7 Configuring Reasons........................................89") == "3.7 Configuring Reasons 89"
+
+
 def test_evidence_unit_preserves_metadata_and_ordered_procedure_steps() -> None:
     steps = [f"{number}. Perform operation {number}." for number in range(1, 101)]
     units, segments = build(

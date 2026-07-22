@@ -139,6 +139,7 @@ class EvidenceGrade(BaseModel):
 
 class RAGState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
+    basic_chat: bool
     standalone_question: str
     exact_phrases: list[str]
     domain_status: Literal["in_scope", "out_of_scope"]
@@ -157,6 +158,11 @@ class RAGState(TypedDict, total=False):
     required_manuals: list[str]
     needs_diagram: bool
     allow_diagrams: bool
+    diagram_requested: bool
+    requested_diagram_type: str
+    diagram_type_override: str
+    diagram_enabled: bool
+    diagram_useful: bool
     retrieved_docs: list[RetrievedDocument]
     expanded_docs: list[RetrievedDocument]
     reranked_docs: list[RetrievedDocument]
@@ -175,5 +181,7 @@ class RAGState(TypedDict, total=False):
     grounded: bool
     unsupported_claims: list[str]
     diagram_supported: bool
-    diagram_dot: str | None
+    diagram_dot: str
+    diagram_error: str
+    diagram_generated: bool
     llm_error_role: str

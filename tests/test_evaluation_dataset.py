@@ -15,3 +15,5 @@ def test_evaluation_question_category_counts() -> None:
     assert counts["comparison"] >= 4
     assert counts["unsupported"] >= 3
     assert counts["irrelevant"] >= 3
+    assert counts["electronics"] >= 5
+    assert counts["discrete"] >= 5

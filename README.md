@@ -65,7 +65,8 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-cp .env.example .env
+touch .env
+chmod 600 .env
 ```
 
 The reranker stack is pinned to `torch==2.3.1`, `transformers==4.48.3`, and
@@ -80,7 +81,7 @@ Edit `.env`:
 | Variable | Required | Default |
 | --- | --- | --- |
 | `GROQ_API_KEY` | Yes | None |
-| `GROQ_<ROLE>_MODEL` | No | Role default in `.env.example` |
+| `GROQ_<ROLE>_MODEL` | No | Built-in role default |
 | `GROQ_<ROLE>_FALLBACK_MODEL` | No | Role default; blank disables fallback |
 | `GROQ_<ROLE>_TEMPERATURE` | No | Role-specific |
 | `GROQ_<ROLE>_MAX_OUTPUT_TOKENS` | No | Role-specific |
@@ -152,8 +153,8 @@ streamlit run app.py
 ## Docker
 
 Docker uses Python 3.11, runs Streamlit as a non-root user, and includes the
-Graphviz system binary. Copy `.env.example` to `.env` and set `GROQ_API_KEY`
-before starting the container. The `.env` file must never be committed.
+Graphviz system binary. Create `.env` and set `GROQ_API_KEY` before starting
+the container. The `.env` file must never be committed.
 
 Build:
 
@@ -176,11 +177,14 @@ docker run --rm \
 Docker Compose:
 
 ```bash
-docker compose up --build
+touch .env
+chmod 600 .env
+docker compose up -d postgres redis chroma
+docker compose --profile tools run --rm ingest
+docker compose up -d --build
 ```
 
-Compose mounts `.env` read-only at `/app/.env`; it does not copy secrets into the
-image or inject them into Docker's inspectable container environment.
+Compose injects `.env` only at runtime; `.env` is excluded from every image.
 Set `APP_PORT` when port 8501 is already in use, for example
 `APP_PORT=8502 docker compose up --build`.
 
@@ -193,7 +197,7 @@ docker compose down
 Logs:
 
 ```bash
-docker compose logs -f opcenter-chatbot
+docker compose logs -f backend frontend
 ```
 
 Rebuild:
@@ -204,14 +208,14 @@ docker compose up
 ```
 
 Place proprietary PDF manuals in `manuals/`; they are bind-mounted and excluded
-from Git and the image. Generated Chroma, BM25, evidence, representation, heading,
-concept, and audit artifacts persist under `indexes/`. LangGraph conversation
-memory persists at `data/chat_memory.sqlite`.
+from Git and the image. BM25, evidence, representation, heading, concept, and
+audit artifacts persist under `indexes/`. Chroma and PostgreSQL use named
+volumes; production LangGraph conversation memory is stored in PostgreSQL.
 
 Run ingestion before the UI when indexes are absent or stale:
 
 ```bash
-docker compose run --rm opcenter-chatbot python -m src.ingest
+docker compose --profile tools run --rm ingest
 ```
 
 Embedding and reranker models download into the persistent Hugging Face cache on
@@ -232,14 +236,22 @@ segment-only index alignment, compact prompts and budgets, role/model isolation,
 rate-limit fallbacks, hard comparisons, cited diagrams, SQLite memory, and
 Streamlit final-only streaming.
 
-Run the real evaluation corpus after configuring `GROQ_API_KEY`:
+Run the real evaluation corpus against the production API after configuring
+`GROQ_API_KEY`:
 
 ```bash
-python evaluation.py
+docker compose --profile tools run --rm evaluate
 ```
 
-The evaluator reports retrieval hit rate, fallback accuracy, citation coverage,
-and mean/median/p95 latency.
+The evaluator reports answer-term accuracy, manual routing, evidence status,
+citation IDs, diagram rendering, and mean/median/p95 latency. Run the bounded
+50-user load test with:
+
+```bash
+docker compose --profile tools run --rm load-test
+```
+
+Prometheus-compatible metrics are exposed by every backend replica at `/metrics`.
 
 ## Run Streamlit
 

@@ -50,6 +50,7 @@ DEFINITION_RE = re.compile(r"^(?:what is\b|definitions?\b|.+\bdefinitions?\b)", 
 PREREQUISITE_RE = re.compile(r"\b(?:prerequisites?|before you (?:begin|start)|requirements?)\b", re.I)
 NONCONTENT_RE = re.compile(r"^(?:table of )?contents$|^index$|^list of (?:figures|tables)$", re.I)
 TOC_LINE_RE = re.compile(r"^.{2,120}?(?:\.{2,}|\s{2,})\s*(?:[A-Z]-)?\d+(?:-\d+)?$", re.I)
+TOC_LEADER_RE = re.compile(r"\.{4,}(?=\s*(?:[A-Z]-)?\d+(?:-\d+)?\s*$)")
 COPYRIGHT_RE = re.compile(
     r"(?:\bcopyright\b|©|all rights reserved|siemens industry software)", re.I
 )
@@ -155,6 +156,7 @@ class EvidenceSpec:
 
 def _clean(value: Any) -> str:
     text = str(value or "").replace("\u00a0", " ").replace("\u200b", "")
+    text = TOC_LEADER_RE.sub(" ", text)
     text = re.sub(r"[ \t]+", " ", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
@@ -1706,14 +1708,27 @@ def build_indexes(
         _representation_metadata(item) for item in representation_records
     ]
 
-    shutil.rmtree(config.chroma_dir, ignore_errors=True)
-    config.chroma_dir.mkdir(parents=True, exist_ok=True)
-    (config.chroma_dir / ".gitkeep").write_text("\n", encoding="utf-8")
+    import chromadb
+
+    if config.chroma_mode == "local":
+        shutil.rmtree(config.chroma_dir, ignore_errors=True)
+        config.chroma_dir.mkdir(parents=True, exist_ok=True)
+        (config.chroma_dir / ".gitkeep").write_text("\n", encoding="utf-8")
+        client = chromadb.PersistentClient(path=str(config.chroma_dir))
+    else:
+        client = chromadb.HttpClient(
+            host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+        )
+        for collection_name in (CHROMA_COLLECTION, REPRESENTATION_COLLECTION):
+            try:
+                client.delete_collection(collection_name)
+            except Exception:
+                pass
     embedding_model = create_embedding_model(config)
     vector_store = Chroma(
         collection_name=CHROMA_COLLECTION,
         embedding_function=embedding_model,
-        persist_directory=str(config.chroma_dir),
+        client=client,
     )
     for start in range(0, len(segments), 256):
         end = start + 256
@@ -1725,7 +1740,7 @@ def build_indexes(
     representation_store = Chroma(
         collection_name=REPRESENTATION_COLLECTION,
         embedding_function=embedding_model,
-        persist_directory=str(config.chroma_dir),
+        client=client,
     )
     for start in range(0, len(representation_records), 256):
         end = start + 256
@@ -1748,11 +1763,14 @@ def build_indexes(
     ):
         logger.info("Indexed %s: %d retrieval segments", manual, count)
     logger.info("Indexed %d deterministic search representations", len(representation_records))
-    return validate_indexes(config, require_schema=False)
+    return validate_indexes(config, require_schema=False, chroma_client=client)
 
 
 def validate_indexes(
-    config: Settings = settings, *, require_schema: bool = True
+    config: Settings = settings,
+    *,
+    require_schema: bool = True,
+    chroma_client: Any | None = None,
 ) -> int:
     """Require Chroma, BM25, and retrieval_segments.json to share IDs."""
     import chromadb
@@ -1782,8 +1800,14 @@ def validate_indexes(
         payload = pickle.load(handle)
     bm25_ids = list(payload.get("segment_ids", []))
 
-    client = chromadb.PersistentClient(path=str(config.chroma_dir))
-    collection = client.get_collection(CHROMA_COLLECTION)
+    client = chroma_client or (
+        chromadb.PersistentClient(path=str(config.chroma_dir))
+        if config.chroma_mode == "local"
+        else chromadb.HttpClient(
+            host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+        )
+    )
+    collection = client.get_collection(config.chroma_collection)
     chroma_ids = list(collection.get(include=[])["ids"])
     representation_collection = client.get_collection(REPRESENTATION_COLLECTION)
     chroma_representation_ids = list(
@@ -1931,9 +1955,23 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         pretty=True,
     )
     (config.indexes_dir / "chunks.json").unlink(missing_ok=True)
+    chroma_indexes_exist = (config.chroma_dir / "chroma.sqlite3").exists()
+    if config.chroma_mode == "server":
+        try:
+            import chromadb
+
+            client = chromadb.HttpClient(
+                host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+            )
+            chroma_indexes_exist = all(
+                client.get_collection(name).count() > 0
+                for name in (CHROMA_COLLECTION, REPRESENTATION_COLLECTION)
+            )
+        except Exception:
+            chroma_indexes_exist = False
     index_artifacts_exist = (
         config.bm25_path.exists()
-        and (config.chroma_dir / "chroma.sqlite3").exists()
+        and chroma_indexes_exist
         and config.heading_index_path.exists()
         and config.concept_index_path.exists()
         and config.ingestion_audit_path.exists()
@@ -1946,11 +1984,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         or old_manifest.get("ingestion_pipeline_version") != INGESTION_PIPELINE_VERSION
         or not index_artifacts_exist
     )
-    indexed_segments = (
-        build_indexes(all_segments, config)
-        if indexes_rebuilt
-        else validate_indexes(config)
-    )
+    indexed_segments = build_indexes(all_segments, config) if indexes_rebuilt else validate_indexes(config)
 
     manifest = {
         "version": INDEX_SCHEMA_VERSION,

@@ -181,7 +181,8 @@ def test_diagram_receives_only_verified_entities_relationships_and_sources(monke
     prompt = captured["prompt"]
     assert "Diagram type: process" in prompt
     assert "Factory uses Resource at Runtime [S1]" in prompt
-    assert "Uncited private draft" not in prompt
-    assert "Supporting source IDs: S1" in prompt
-    assert "Relevant evidence" not in prompt
+    assert "Verified final answer:\nUncited private draft" in prompt
+    assert "Allowed citation IDs: S1" in prompt
+    assert "Cited EvidenceUnits only" in prompt
+    assert "Relevant evidence 1" in prompt
     assert nodes._estimated_tokens(prompt) <= settings.diagram_input_token_budget
