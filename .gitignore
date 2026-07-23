@@ -1,6 +1,5 @@
 .env
 .env.*
-!.env.example
 venv/
 .venv/
 env/
@@ -18,6 +17,7 @@ __pycache__/
 htmlcov/
 .cache/
 data/chat_memory.sqlite
+data/chat_memory.sqlite-*
 manuals/*.pdf
 indexes/chroma/*
 !indexes/chroma/.gitkeep
@@ -29,3 +29,5 @@ indexes/heading_index.json
 indexes/concept_index.json
 indexes/ingestion_audit.json
 indexes/search_representations.json
+indexes/manual_figures.json
+indexes/manual_figures/

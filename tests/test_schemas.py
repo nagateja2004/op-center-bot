@@ -40,3 +40,23 @@ def test_structured_schemas_are_flat() -> None:
 def test_settings_reports_missing_api_key() -> None:
     with pytest.raises(EnvironmentError, match="GROQ_API_KEY"):
         Settings(groq_api_key="").validate()
+
+
+def test_settings_rejects_a_non_groq_api_key() -> None:
+    with pytest.raises(EnvironmentError, match="beginning with 'gsk_'"):
+        Settings(groq_api_key="another-provider-key").validate()
+
+
+def test_postgres_requires_database_url_but_explicit_sqlite_does_not() -> None:
+    with pytest.raises(EnvironmentError, match="DATABASE_URL"):
+        Settings(
+            groq_api_key="gsk_test",
+            checkpoint_backend="postgres",
+            database_url="",
+        ).validate()
+
+    Settings(
+        groq_api_key="gsk_test",
+        checkpoint_backend="sqlite",
+        database_url="",
+    ).validate()

@@ -1,3 +1,4 @@
+import asyncio
 from inspect import getsource
 import json
 from pathlib import Path
@@ -122,21 +123,23 @@ def test_live_chroma_and_bm25_contain_only_aligned_retrieval_segments() -> None:
     )
 
 
-def test_planner_grader_and_diagram_policies_exclude_answer_model() -> None:
+def test_planner_and_grader_policies_exclude_answer_model_and_diagram_models_are_fixed() -> None:
     answer_models = {
         llm.ROLE_DEFAULTS["answer"].primary_model,
         llm.ROLE_DEFAULTS["answer"].fallback_model,
     }
-    for role in ("planner", "grader", "diagram"):
+    for role in ("planner", "grader"):
         policy = llm.ROLE_DEFAULTS[role]
         assert policy.primary_model not in answer_models
         assert policy.fallback_model not in answer_models
-    assert 'task="planner"' in getsource(nodes.understand_question)
-    assert 'task="grader"' in getsource(nodes.grade_evidence)
-    assert 'task="diagram"' in getsource(nodes.generate_diagram)
+    assert llm.ROLE_DEFAULTS["diagram"].primary_model == "openai/gpt-oss-20b"
+    assert llm.ROLE_DEFAULTS["diagram"].fallback_model == "openai/gpt-oss-120b"
+    assert 'task="planner"' in getsource(nodes.aunderstand_question)
+    assert 'task="grader"' in getsource(nodes.agrade_evidence)
+    assert 'task="diagram"' in getsource(nodes.agenerate_diagram)
 
 
-def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
+def test_grader_429_retries_once_then_uses_grader_fallback(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
     options: list[dict] = []
 
@@ -144,7 +147,7 @@ def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
         def __init__(self, model: str):
             self.model = model
 
-        def invoke(self, prompt):
+        async def ainvoke(self, prompt):
             calls.append(("grader", self.model))
             if self.model == "openai/gpt-oss-20b":
                 raise GroqRequestError("rate_limit", "grader", 429)
@@ -172,14 +175,16 @@ def test_grader_429_uses_only_grader_fallback(monkeypatch) -> None:
     monkeypatch.setattr(llm, "role_config", policy)
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client(model))
 
-    grade = llm.call_structured("prompt", EvidenceGrade, task="grader")
+    grade = asyncio.run(llm.call_structured("prompt", EvidenceGrade, task="grader"))
 
     assert grade.status == "sufficient"
     assert calls == [
         ("grader", "openai/gpt-oss-20b"),
+        ("grader", "openai/gpt-oss-20b"),
         ("grader", "meta-llama/llama-4-scout-17b-16e-instruct"),
     ]
     assert options == [
+        {"method": "json_schema", "strict": True},
         {"method": "json_schema", "strict": True},
         {"method": "json_schema", "strict": False},
     ]
@@ -200,12 +205,12 @@ def test_plain_generation_roles_never_enable_function_calling() -> None:
 @pytest.mark.parametrize(
     ("function", "budget_name"),
     [
-        (nodes.understand_question, "planner_input_token_budget"),
-        (nodes.broaden_query, "query_broadening_input_token_budget"),
-        (nodes.grade_evidence, "grader_input_token_budget"),
-        (nodes.generate_answer, "answer_input_token_budget"),
-        (nodes.verify_answer, "verifier_input_token_budget"),
-        (nodes.generate_diagram, "diagram_input_token_budget"),
+        (nodes.aunderstand_question, "planner_input_token_budget"),
+        (nodes.abroaden_query, "query_broadening_input_token_budget"),
+        (nodes.agrade_evidence, "grader_input_token_budget"),
+        (nodes.agenerate_answer, "answer_input_token_budget"),
+        (nodes.averify_answer, "verifier_input_token_budget"),
+        (nodes.agenerate_diagram, "diagram_input_token_budget"),
     ],
 )
 def test_every_llm_node_enforces_its_configured_prompt_budget(function, budget_name) -> None:

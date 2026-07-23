@@ -97,6 +97,7 @@ def test_answer_budget_keeps_one_unique_source_per_supported_aspect() -> None:
             partial_aspects="none",
             missing_aspects="none",
             evidence=evidence,
+            relationship_requirements="none",
             answer_structure="- Direct explanation",
         ),
         settings.answer_input_token_budget,
@@ -181,7 +182,8 @@ def test_diagram_receives_only_verified_entities_relationships_and_sources(monke
     prompt = captured["prompt"]
     assert "Diagram type: process" in prompt
     assert "Factory uses Resource at Runtime [S1]" in prompt
-    assert "Uncited private draft" not in prompt
-    assert "Supporting source IDs: S1" in prompt
-    assert "Relevant evidence" not in prompt
+    assert "Verified final answer:\nUncited private draft" in prompt
+    assert "Allowed citation IDs: S1" in prompt
+    assert "Cited EvidenceUnits only" in prompt
+    assert "Relevant evidence 1" in prompt
     assert nodes._estimated_tokens(prompt) <= settings.diagram_input_token_budget

@@ -15,9 +15,9 @@ import chromadb
 from langchain_core.embeddings import Embeddings
 
 from src.config import Settings, settings
+from src.cache import get as cache_get, normalized, set as cache_set
 from src.embeddings import create_embedding_model, create_reranker, finite_scores
 from src.ingest import (
-    CHROMA_COLLECTION,
     REPRESENTATION_COLLECTION,
     _bm25_tokens,
     _require_index_schema,
@@ -32,6 +32,7 @@ HEADING_TOP_K = 8
 CONCEPT_TOP_K = 8
 logger = logging.getLogger(__name__)
 _disabled_rerankers: set[str] = set()
+_chroma_client: Any | None = None
 STOPWORDS = {
     "a", "an", "and", "are", "for", "how", "in", "is", "of", "the", "to", "what", "with"
 }
@@ -53,6 +54,32 @@ class RetrievalResources:
     alias_mappings: dict[str, tuple[str, ...]]
     manual_names: tuple[str, ...]
     heading_embeddings: list[list[float]] | None = None
+
+
+def create_chroma_client(config: Settings = settings) -> Any:
+    """Create the configured Chroma client; production uses the HTTP server."""
+    if config.chroma_mode == "local":
+        return chromadb.PersistentClient(path=str(config.chroma_dir))
+    return chromadb.HttpClient(
+        host=config.chroma_host,
+        port=config.chroma_port,
+        ssl=config.chroma_ssl,
+    )
+
+
+def configure_chroma_client(client: Any | None) -> None:
+    """Set the process-wide Chroma client created during backend startup."""
+    global _chroma_client
+    _chroma_client = client
+    load_resources.cache_clear()
+
+
+def _configured_chroma_client(config: Settings) -> Any:
+    if _chroma_client is not None:
+        return _chroma_client
+    if config.chroma_mode == "local":
+        return create_chroma_client(config)
+    raise RuntimeError("Chroma HTTP client has not been initialized")
 
 
 @lru_cache(maxsize=1)
@@ -87,8 +114,8 @@ def load_resources(config: Settings = settings) -> RetrievalResources:
     with bm25_path.open("rb") as handle:
         payload = pickle.load(handle)
     bm25_ids = tuple(str(segment_id) for segment_id in payload["segment_ids"])
-    client = chromadb.PersistentClient(path=str(config.chroma_dir))
-    collection = client.get_collection(CHROMA_COLLECTION)
+    client = _configured_chroma_client(config)
+    collection = client.get_collection(config.chroma_collection)
     representation_collection = client.get_collection(REPRESENTATION_COLLECTION)
 
     expected = set(segments_by_id)
@@ -223,8 +250,13 @@ def vector_search(
         return []
     resources = load_resources(config)
     limit = top_k or config.vector_top_k
+    embedding_key = {"query": normalized(query), "model": config.embedding_model}
+    embedding = cache_get("embedding", embedding_key)
+    if embedding is None:
+        embedding = resources.embedding_model.embed_query(query)
+        cache_set("embedding", embedding_key, embedding, ttl=3600)
     response = resources.chroma_collection.query(
-        query_embeddings=[resources.embedding_model.embed_query(query)],
+        query_embeddings=[embedding],
         n_results=min(limit, len(resources.segments_by_id)),
         include=["distances"],
     )
@@ -352,8 +384,8 @@ def heading_search(
         relevance_values=[query],
     )
     logger.info(
-        "heading_matches query=%r matches=%s",
-        query,
+        "heading_matches query_length=%d matches=%s",
+        len(query),
         [result["metadata"].get("matched_heading") for result in results[:5]],
     )
     return results
@@ -514,8 +546,8 @@ def concept_search(
         relevance_values=[query, *targets],
     )
     logger.info(
-        "concept_matches query=%r matches=%s",
-        query,
+        "concept_matches query_length=%d matches=%s",
+        len(query),
         [result["metadata"].get("matched_concept") for result in results[:5]],
     )
     return results
@@ -809,6 +841,15 @@ def retrieve_multiple_queries(
     if not queries:
         return []
 
+    cache_key = {
+        "question": normalized(standalone_query), "queries": [normalized(query) for query in queries],
+        "entities": list(entities), "aliases": list(aliases), "manuals": list(preferred_manuals),
+        "intent": intent, "index": _index_version(config),
+        "config": [config.vector_top_k, config.bm25_top_k, config.fused_top_k, config.max_search_queries],
+    }
+    cached = cache_get("retrieval", cache_key)
+    if cached is not None:
+        return cached
     per_query = [
         _retrieve_query_paths(
             query,
@@ -833,7 +874,16 @@ def retrieve_multiple_queries(
             + scores["manual_preference_bonus"]
         )
     fused.sort(key=lambda result: result["retrieval_scores"]["final_score"], reverse=True)
-    return deduplicate_exact_results(fused)[: limit or config.fused_top_k]
+    results = deduplicate_exact_results(fused)[: limit or config.fused_top_k]
+    cache_set("retrieval", cache_key, results)
+    return results
+
+
+def _index_version(config: Settings) -> str:
+    try:
+        return str(json.loads((config.indexes_dir / "manifest.json").read_text()).get("generated_at", ""))
+    except Exception:
+        return "unknown"
 
 
 def _retrieve_query_paths(
@@ -903,8 +953,8 @@ def _retrieve_query_paths(
         score_name="rrf_score",
     )
     logger.info(
-        "query_retrieval query=%r preferred=%s body=%s representations=%s bm25=%s fused=%s",
-        query,
+        "query_retrieval query_length=%d preferred=%s body=%s representations=%s bm25=%s fused=%s",
+        len(query),
         list(preferred_manuals),
         _sections(vector[:5]),
         _sections(representations[:5]),

@@ -1,23 +1,140 @@
 services:
-  opcenter-chatbot:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opcenter}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-opcenter}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    ports:
+      - "${CHROMA_EXPOSE_PORT:-8001}:8000"
+    volumes:
+      - chroma_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/8000; printf 'GET /api/v2/healthcheck HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    ports:
-      - "${APP_PORT:-8501}:8501"
+      dockerfile: Dockerfile.backend
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-opcenter}
+      CHECKPOINT_BACKEND: postgres
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_MODE: server
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
     volumes:
-      - ./.env:/app/.env:ro
-      - ./data:/app/data
       - ./indexes:/app/indexes
       - ./manuals:/app/manuals
       - huggingface_cache:/app/.cache/huggingface
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 2
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "${APP_PORT:-8501}:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8501/_stcore/health"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
+      start_period: 15s
       retries: 3
+
+  ingest:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["python", "-m", "src.ingest"]
+    env_file:
+      - .env
+    environment:
+      CHROMA_MODE: server
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+    volumes:
+      - ./indexes:/app/indexes
+      - ./manuals:/app/manuals:ro
+      - huggingface_cache:/app/.cache/huggingface
+    depends_on:
+      chroma:
+        condition: service_healthy
+
+  load-test:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["python", "load_test.py", "--backend-url", "http://backend:8000", "--users", "50"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  evaluate:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["python", "evaluation.py", "--backend-url", "http://backend:8000"]
+    depends_on:
+      backend:
+        condition: service_healthy
 
 volumes:
   huggingface_cache:
+  postgres_data:
+  chroma_data:

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import cast
 
@@ -24,8 +25,12 @@ from src.llm import (
 from src.schemas import QueryPlan
 
 
+async def _unused():
+    return "unused"
+
+
 def test_llm_is_cached_and_uses_role_request_limits() -> None:
-    config = Settings(groq_api_key="test-key")
+    config = Settings(groq_api_key="gsk_test-key")
     captured: dict[str, object] = {}
     client = object()
     monkeypatch = pytest.MonkeyPatch()
@@ -45,7 +50,7 @@ def test_llm_is_cached_and_uses_role_request_limits() -> None:
 
 def test_groq_rejects_non_generation_tasks() -> None:
     with pytest.raises(ValueError, match="not allowed"):
-        _call_groq(cast(GroqRole, "retrieval"), lambda: "unused")
+        asyncio.run(_call_groq(cast(GroqRole, "retrieval"), lambda: _unused()))
 
 
 def test_structured_call_uses_one_distinct_fallback_model(
@@ -59,7 +64,7 @@ def test_structured_call_uses_one_distinct_fallback_model(
         def __init__(self, model: str):
             self.model = model
 
-        def invoke(self, prompt):
+        async def ainvoke(self, prompt):
             calls.append(self.model)
             if self.model == "primary":
                 raise GroqRequestError("rate_limit", "planner", 429)
@@ -81,21 +86,21 @@ def test_structured_call_uses_one_distinct_fallback_model(
     )
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client(model))
 
-    result = call_structured("private manual prompt", QueryPlan, task="planner")
+    result = asyncio.run(call_structured("private manual prompt", QueryPlan, task="planner"))
 
     assert result.standalone_question == "What is a CDO?"
-    assert calls == ["primary", "fallback"]
+    assert calls == ["primary", "primary", "fallback"]
     assert "recovered=True" in caplog.text
     assert all(record.levelname != "ERROR" for record in caplog.records)
 
 
-def test_rate_limited_model_is_not_retried_when_fallback_matches_primary(
+def test_rate_limited_model_retries_once_when_fallback_matches_primary(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     calls: list[str] = []
 
     class Client:
-        def invoke(self, prompt):
+        async def ainvoke(self, prompt):
             calls.append("same")
             raise GroqRequestError("rate_limit", "answer", 429)
 
@@ -107,9 +112,9 @@ def test_rate_limited_model_is_not_retried_when_fallback_matches_primary(
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client())
 
     with pytest.raises(GroqRequestError, match="kind=rate_limit"):
-        call_llm("private manual prompt", task="answer", evidence_count=4)
+        asyncio.run(call_llm("private manual prompt", task="answer", evidence_count=4))
 
-    assert calls == ["same"]
+    assert calls == ["same", "same"]
     assert "evidence_count=4" in caplog.text
     assert "private manual prompt" not in caplog.text
     assert any(record.levelname == "ERROR" for record in caplog.records)
@@ -117,7 +122,7 @@ def test_rate_limited_model_is_not_retried_when_fallback_matches_primary(
 
 def test_plain_llm_call_removes_hidden_reasoning(monkeypatch) -> None:
     class Client:
-        def invoke(self, prompt):
+        async def ainvoke(self, prompt):
             return AIMessage(content="<think>internal reasoning</think>\nClear answer [S1].")
 
     monkeypatch.setattr(
@@ -127,9 +132,65 @@ def test_plain_llm_call_removes_hidden_reasoning(monkeypatch) -> None:
     )
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client())
 
-    result = call_llm("prompt", task="verifier")
+    result = asyncio.run(call_llm("prompt", task="verifier"))
 
     assert result.content == "Clear answer [S1]."
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_non_retryable_http_errors_do_not_retry_or_fallback(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        async def ainvoke(self, prompt):
+            calls.append(self.model)
+            raise GroqRequestError("bad_request", "answer", status)
+
+    monkeypatch.setattr(
+        llm,
+        "role_config",
+        lambda role: RoleConfig("primary", "fallback", 0, 100, 10, False),
+    )
+    monkeypatch.setattr(llm, "create_llm", lambda role, model: Client(model))
+
+    with pytest.raises(GroqRequestError):
+        asyncio.run(call_llm("prompt", task="answer"))
+
+    assert calls == ["primary"]
+
+
+def test_rate_limit_respects_retry_after_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    class Client:
+        async def ainvoke(self, prompt):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise GroqRequestError("rate_limit", "answer", 429, retry_after=2.0)
+            return AIMessage(content="ok")
+
+    monkeypatch.setattr(
+        llm,
+        "role_config",
+        lambda role: RoleConfig("primary", "", 0, 100, 10, False),
+    )
+    monkeypatch.setattr(llm, "create_llm", lambda role, model: Client())
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(llm.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(llm.random, "uniform", lambda start, end: 0.1)
+
+    assert asyncio.run(call_llm("prompt", task="answer")).content == "ok"
+    assert calls == 2
+    assert sleeps == [2.1]
 
 
 @pytest.mark.parametrize(
@@ -158,7 +219,7 @@ def test_invalid_structured_output_is_sanitized_after_one_fallback(monkeypatch) 
         def __init__(self, model: str):
             self.model = model
 
-        def invoke(self, prompt):
+        async def ainvoke(self, prompt):
             calls.append(self.model)
             return {"unexpected": "payload containing private prompt"}
 
@@ -177,7 +238,7 @@ def test_invalid_structured_output_is_sanitized_after_one_fallback(monkeypatch) 
     monkeypatch.setattr(llm, "create_llm", lambda role, model: Client(model))
 
     with pytest.raises(GroqRequestError) as captured:
-        call_structured("private prompt", QueryPlan, task="planner")
+        asyncio.run(call_structured("private prompt", QueryPlan, task="planner"))
 
     assert calls == ["primary", "fallback"]
     assert captured.value.kind == "invalid_structured"
@@ -187,8 +248,11 @@ def test_invalid_structured_output_is_sanitized_after_one_fallback(monkeypatch) 
 def test_timeout_is_sanitized() -> None:
     timeout = APITimeoutError(request=httpx.Request("POST", "https://api.groq.com"))
 
+    async def raise_timeout():
+        raise timeout
+
     with pytest.raises(GroqRequestError) as captured:
-        _call_groq("verifier", lambda: (_ for _ in ()).throw(timeout))
+        asyncio.run(_call_groq("verifier", raise_timeout))
 
     assert captured.value.kind == "timeout"
     assert "api.groq.com" not in str(captured.value)
@@ -205,7 +269,7 @@ def test_role_configuration_and_structured_permissions(monkeypatch) -> None:
 
     assert policy == RoleConfig("answer-primary", "", 0.25, 3000, 45, False)
     with pytest.raises(ValueError, match="not allowed"):
-        call_structured("prompt", QueryPlan, task="answer")
+        asyncio.run(call_structured("prompt", QueryPlan, task="answer"))
 
 
 def test_compose_model_aliases_are_supported(monkeypatch) -> None:

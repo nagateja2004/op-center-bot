@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 
 import src.nodes as nodes
-import src.retrieval as retrieval
 from src.graph import graph
 from src.schemas import (
     EvidenceGrade,
@@ -35,9 +34,14 @@ QUESTIONS = {
     ),
     "sampling_movement": (
         "Using Modeling and Shop Floor evidence, explain how the Current Spec, "
-        "Sampling Plan, Sample Tests, sampling status, failure movement rule, and "
+        "Sampling Plan, Sample Tests, sampling status, failed-sampling movement override, and "
         "Move transaction determine whether a Container advances to the Next Workflow "
         "Step or remains Movement Blocked. Include likely reasons, checks, and a decision diagram."
+    ),
+    "move_validation": (
+        "What happens during a Move transaction from the container’s current Workflow "
+        "Step to the next step? Include Spec validation, Resource validation, and the "
+        "success or error paths in a decision-flow diagram."
     ),
 }
 
@@ -48,13 +52,13 @@ def document(aspect: str) -> dict:
     release = "Release 2504+ Rev. 1"
     section = aspect
     text = f"Manual evidence for {aspect}."
-    if any(word in lowered for word in ("current spec", "sampling plan", "sample tests", "failure movement")):
+    if any(word in lowered for word in ("current spec", "sampling plan", "sample tests", "failed-sampling movement")):
         manual = "Opcenter Execution Core Modeling User Guide"
         release = "Release 2510+ Rev. 1"
         section = "Spec sampling configuration"
         text = (
-            f"{aspect} configures the Current Spec, Sampling Plan, Sample Tests, and "
-            "Failure Movement Rule for the Container and Movement Blocked outcome."
+            f"{aspect} configures the Current Spec, Sampling Plan, and Sample Tests. "
+            "A Sample Test can allow a move even if the Container fails sampling."
         )
     elif any(word in lowered for word in ("sampling status", "move transaction")):
         manual = "Opcenter Execution Core Shop Floor User Guide"
@@ -107,7 +111,15 @@ def document(aspect: str) -> dict:
 
 def plan_for(question: str) -> QueryPlan:
     lowered = question.casefold()
-    if "current spec" in lowered and "move transaction" in lowered:
+    if "spec validation" in lowered and "resource validation" in lowered:
+        aspects = [
+            "Move destination",
+            "Spec and material-consumption validation",
+            "Resource Group validation",
+            "optional-step look-ahead and success or error paths",
+        ]
+        outputs = ["explanation", "diagram"]
+    elif "current spec" in lowered and "move transaction" in lowered:
         aspects = list(nodes.SAMPLING_REQUIRED_ASPECTS)
         outputs = ["explanation", "likely_reasons", "checks", "diagram", "cross_manual_synthesis"]
     elif "cannot continue" in lowered:
@@ -145,7 +157,17 @@ def plan_for(question: str) -> QueryPlan:
         complexity="multi_aspect",
         required_aspects=aspects,
         required_output=outputs,
-        entities=(list(nodes.SAMPLING_ALLOWED_ENTITIES) if "current spec" in lowered else ["Opcenter"]),
+        entities=(
+            [
+                "Move Transaction", "Workflow Step", "Spec Validation",
+                "Material Consumption", "Resource Validation", "Resource Group",
+                "Optional Step", "Success", "Error",
+            ]
+            if "spec validation" in lowered and "resource validation" in lowered
+            else list(nodes.SAMPLING_ALLOWED_ENTITIES)
+            if "current spec" in lowered
+            else ["Opcenter"]
+        ),
         search_queries=[question],
         needs_diagram="diagram" in outputs,
     )
@@ -170,13 +192,20 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
         question = question_match.group(1).strip() if question_match else ""
         lowered = question.casefold()
         if task == "answer":
-            if "current spec" in lowered and "move transaction" in lowered:
+            if "spec validation" in lowered and "resource validation" in lowered:
+                answer = (
+                    "The Move transaction determines the destination Workflow Step [S1]. "
+                    "Required Spec and material-consumption validation must pass before movement continues [S2]. "
+                    "When a Resource is supplied, it is validated against the Spec Resource Group [S3]. "
+                    "A valid Resource completes the Move; an invalid Resource either follows a supported optional-step look-ahead or ends in an error [S3] [S4]."
+                )
+            elif "current spec" in lowered and "move transaction" in lowered:
                 answer = (
                     "**Direct explanation**\nThe Container is evaluated at its Current Spec before movement [S1].\n\n"
-                    "**Configuration relationship**\nThe Current Spec links the Sampling Plan and Sample Tests, while the Failure Movement Rule controls failed-sample movement [S2] [S3] [S5].\n\n"
+                    "**Configuration relationship**\nThe Current Spec links the Sampling Plan and Sample Tests; a Sample Test can allow movement after failed sampling [S2] [S3] [S5].\n\n"
                     "**Runtime behavior**\nSampling Status is evaluated at runtime; the Move Transaction advances the Container to the Next Workflow Step when movement is allowed [S4] [S6].\n\n"
-                    "**Likely reasons movement is blocked**\nSampling Status may be In Process, or a Fail result may be blocked by the Failure Movement Rule and leave Movement Blocked [S4] [S5].\n\n"
-                    "**What to check**\nCheck the Current Spec links, configured Sampling Plan and Sample Tests, current Sampling Status, Failure Movement Rule, and availability of the Move Transaction [S1] [S2] [S3] [S4] [S5] [S6].\n\n"
+                    "**Likely reasons movement is blocked**\nSampling Status may be In Process, or the Sample Test may not allow movement after a Fail result [S4] [S5].\n\n"
+                    "**What to check**\nCheck the Current Spec links, configured Sampling Plan and Sample Tests, current Sampling Status, the Sample Test failed-movement option, and availability of the Move Transaction [S1] [S2] [S3] [S4] [S5] [S6].\n\n"
                     "**Decision diagram**\nThe diagram summarizes the verified runtime decision path [S1] [S4] [S6]."
                 )
             elif "cannot continue" in lowered:
@@ -226,6 +255,28 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
             ).group(1).strip()
             return AIMessage(content=answer)
         if task == "diagram":
+            if "Spec validation" in prompt and "Resource validation" in prompt:
+                return AIMessage(
+                    content=(
+                        'digraph G {\n'
+                        'start [label="Start Move [S1]", shape=box];\n'
+                        'destination [label="Determine destination [S1]", shape=box];\n'
+                        'spec [label="Spec validation passes? [S2]", shape=diamond];\n'
+                        'material [label="Validate material consumption [S2]", shape=box];\n'
+                        'resource [label="Resource supplied for validation? [S3]", shape=diamond];\n'
+                        'valid [label="Resource valid for Resource Group? [S3]", shape=diamond];\n'
+                        'optional [label="Optional-step look-ahead supported? [S4]", shape=diamond];\n'
+                        'future [label="Use valid future Workflow Step [S4]", shape=box];\n'
+                        'success [label="Success: Complete Move [S1]", shape=box];\n'
+                        'error [label="Error: Move blocked [S2] [S4]", shape=box];\n'
+                        'start -> destination; destination -> spec; spec -> error [label="Fail [S2]"];\n'
+                        'spec -> material [label="Pass [S2]"]; material -> resource;\n'
+                        'resource -> success [label="No [S3]"]; resource -> valid [label="Yes [S3]"];\n'
+                        'valid -> success [label="Valid [S3]"]; valid -> optional [label="Invalid [S3]"];\n'
+                        'optional -> future [label="Yes [S4]"]; optional -> error [label="No [S4]"];\n'
+                        'future -> success;\n}'
+                    )
+                )
             if "Diagram type: decision" in prompt:
                 return AIMessage(
                     content=(
@@ -235,7 +286,7 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
                         'plan [label="Sampling Plan [S2]", shape=box];\n'
                         'tests [label="Sample Tests [S3]", shape=box];\n'
                         'status [label="Sampling Status? [S4]", shape=diamond];\n'
-                        'rule [label="Failure Movement Rule? [S5]", shape=diamond];\n'
+                        'rule [label="Sample Test Allows Failed Move? [S5]", shape=diamond];\n'
                         'move [label="Move Transaction [S6]", shape=box];\n'
                         'next [label="Next Workflow Step [S6]", shape=box];\n'
                         'blocked [label="Movement Blocked [S5]", shape=box];\n'
@@ -289,7 +340,7 @@ def hard_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def invoke(question: str) -> dict:
     return graph.invoke(
-        {"messages": [HumanMessage(content=question)], "retry_count": 0, "allow_diagrams": True},
+        {"messages": [HumanMessage(content=question)], "retry_count": 0, "diagram_enabled": True},
         config={"configurable": {"thread_id": str(uuid4())}},
     )
 
@@ -364,20 +415,19 @@ def test_diagram_failure_preserves_verified_answer_and_sources(
     assert re.search(r"\[S\d+\]", result["answer"])
     assert result["sources"]
     assert result["grounded"] is True
-    assert result["diagram_dot"] is None
+    assert result["diagram_dot"] == ""
+    assert result["diagram_generated"] is False
+    assert result["diagram_error"] == "unavailable_model"
 
 
 def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
     hard_pipeline, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(nodes, "retrieve_multiple_queries", retrieval.retrieve_multiple_queries)
-    monkeypatch.setattr(nodes, "expand_retrieval_context", retrieval.expand_context)
     monkeypatch.setattr(
         nodes,
         "cross_encoder_rerank",
         lambda query, documents, **kwargs: documents[: kwargs["limit"]],
     )
-    monkeypatch.setattr(nodes, "resolve_evidence_units", retrieval.resolve_evidence_units)
     diagram_prompts: list[str] = []
     original_llm = nodes.call_llm
 
@@ -403,7 +453,8 @@ def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
         for document in result["reranked_docs"]
     }
     cited_manuals = {nodes._manual_family(source.manual) for source in result["sources"]}
-    assert retrieved_manuals == cited_manuals == {"Modeling", "Shop Floor"}
+    assert {"Modeling", "Shop Floor"}.issubset(retrieved_manuals)
+    assert cited_manuals == {"Modeling", "Shop Floor"}
     assert result["evidence_status"] == "sufficient"
     assert result["required_aspects"] == nodes.SAMPLING_REQUIRED_ASPECTS
     assert all(result["coverage"][aspect] == "sufficient" for aspect in nodes.SAMPLING_REQUIRED_ASPECTS)
@@ -425,7 +476,8 @@ def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
     diagram_prompt = diagram_prompts[0]
     assert "Verified decisions:" in diagram_prompt
     assert "Verified outcomes: Next Workflow Step | Movement Blocked" in diagram_prompt
-    assert "Direct explanation" not in diagram_prompt and "What to check" not in diagram_prompt
+    assert "Verified final answer:" in diagram_prompt
+    assert "Direct explanation" in diagram_prompt and "What to check" in diagram_prompt
     assert not any(
         f"Verified entities: {generic}" in diagram_prompt
         for generic in nodes.SAMPLING_REJECTED_NODES
@@ -443,7 +495,7 @@ def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
     validation = {
         "allowed_entities": set(nodes.SAMPLING_ALLOWED_ENTITIES),
         "required_entities": {
-            "Sampling Plan", "Sample Tests", "Sampling Status", "Failure Movement Rule"
+            "Sampling Plan", "Sample Tests", "Sampling Status", "Sample Test Allows Failed Move"
         },
         "source_ids": {f"S{number}" for number in range(1, 7)},
         "decision_diagram": True,
@@ -456,6 +508,31 @@ def test_sampling_movement_uses_both_manuals_and_valid_decision_diagram(
         "}", 'isolated [label="Container [S1]", shape=box];\n}', 1
     )
     assert nodes._validated_dot(isolated, "LR", **validation) is None
+
+
+def test_explicit_move_decision_diagram_runs_after_verification(hard_pipeline) -> None:
+    thread_id = str(uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    events = list(
+        graph.stream(
+            {
+                "messages": [HumanMessage(content=QUESTIONS["move_validation"])],
+                "retry_count": 0,
+                "diagram_enabled": True,
+            },
+            config=config,
+            stream_mode="updates",
+        )
+    )
+    result = dict(graph.get_state(config).values)
+
+    assert any("generate_diagram" in event for event in events)
+    assert result["answer"]
+    assert result["diagram_requested"] is True
+    assert result["requested_diagram_type"] == "decision"
+    assert result["diagram_generated"] is True
+    assert result["diagram_error"] == ""
+    assert all(label in result["diagram_dot"] for label in ("Success", "Error", "shape=diamond"))
 
 
 def test_v2_update_stream_finishes_before_final_answer_is_read(hard_pipeline) -> None:

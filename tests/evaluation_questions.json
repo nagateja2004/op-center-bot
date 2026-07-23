@@ -46,5 +46,17 @@
 
   {"id":"irrelevant_01","category":"irrelevant","question":"How do I bake a chocolate cake?","expected_status":"out_of_scope","expected_terms":[]},
   {"id":"irrelevant_02","category":"irrelevant","question":"What will the weather be tomorrow?","expected_status":"out_of_scope","expected_terms":[]},
-  {"id":"irrelevant_03","category":"irrelevant","question":"Write a poem about the ocean.","expected_status":"out_of_scope","expected_terms":[]}
+  {"id":"irrelevant_03","category":"irrelevant","question":"Write a poem about the ocean.","expected_status":"out_of_scope","expected_terms":[]},
+
+  {"id":"electronics_01","category":"electronics","question":"What is Opcenter Execution Electronics?","expected_status":"sufficient","expected_terms":["execution electronics"],"expected_manuals":["Execution Electronics"]},
+  {"id":"electronics_02","category":"electronics","question":"How do I set up a new manufacturing product in Opcenter Execution Electronics?","expected_status":"sufficient","expected_terms":["manufacturing product"],"expected_manuals":["Execution Electronics"]},
+  {"id":"electronics_03","category":"electronics","question":"Give me the steps for starting containers in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["starting containers","container"],"expected_manuals":["Execution Electronics"]},
+  {"id":"electronics_04","category":"electronics","question":"Explain carrier tracking in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["carrier"],"expected_manuals":["Execution Electronics"]},
+  {"id":"electronics_05","category":"electronics","question":"Show a relationship diagram for physical address management in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["physical address"],"expected_manuals":["Execution Electronics"],"expected_diagram":true},
+
+  {"id":"discrete_01","category":"discrete","question":"How do I create a process step in Opcenter EX DS?","expected_status":"sufficient","expected_terms":["process step"],"expected_manuals":["Execution Discrete"]},
+  {"id":"discrete_02","category":"discrete","question":"How are catalogs managed in Opcenter Execution Discrete?","expected_status":"sufficient","expected_terms":["catalog"],"expected_manuals":["Execution Discrete"]},
+  {"id":"discrete_03","category":"discrete","question":"Explain quality gates in Opcenter Execution Discrete.","expected_status":"sufficient","expected_terms":["quality gate"],"expected_manuals":["Execution Discrete"]},
+  {"id":"discrete_04","category":"discrete","question":"How is production execution managed in Opcenter Execution Discrete?","expected_status":"sufficient","expected_terms":["production execution"],"expected_manuals":["Execution Discrete"]},
+  {"id":"discrete_05","category":"discrete","question":"Give me the steps for completing work order operations in Opcenter Execution Discrete.","expected_status":"sufficient","expected_terms":["work order operation"],"expected_manuals":["Execution Discrete"]}
 ]

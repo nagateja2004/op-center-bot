@@ -183,7 +183,7 @@ def invoke(question: str, thread_id: str | None = None) -> dict:
         {
             "messages": [HumanMessage(content=question)],
             "retry_count": 0,
-            "allow_diagrams": True,
+            "diagram_enabled": True,
         },
         config={"configurable": {"thread_id": thread_id or str(uuid4())}},
     )
@@ -240,7 +240,7 @@ def test_one_retry_limit(mocked_pipeline) -> None:
 def test_relevant_but_unsupported_fallback(mocked_pipeline) -> None:
     result = invoke("Does Opcenter support Kubernetes autoscaling?")
     assert result["evidence_status"] == "in_scope_insufficient"
-    assert result["diagram_dot"] is None
+    assert result["diagram_dot"] == ""
     assert "Opcenter-related" in result["answer"]
 
 
@@ -292,7 +292,7 @@ def test_diagram_only_when_evidence_supports_it(mocked_pipeline) -> None:
     supported = invoke("Show the Factory hierarchy relationship")
     unsupported = invoke("Show an Opcenter Kubernetes architecture")
     assert supported["diagram_dot"]
-    assert unsupported["diagram_dot"] is None
+    assert unsupported["diagram_dot"] == ""
 
 
 def test_no_image_processing_code() -> None:

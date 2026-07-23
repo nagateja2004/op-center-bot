@@ -50,12 +50,17 @@ DEFINITION_RE = re.compile(r"^(?:what is\b|definitions?\b|.+\bdefinitions?\b)", 
 PREREQUISITE_RE = re.compile(r"\b(?:prerequisites?|before you (?:begin|start)|requirements?)\b", re.I)
 NONCONTENT_RE = re.compile(r"^(?:table of )?contents$|^index$|^list of (?:figures|tables)$", re.I)
 TOC_LINE_RE = re.compile(r"^.{2,120}?(?:\.{2,}|\s{2,})\s*(?:[A-Z]-)?\d+(?:-\d+)?$", re.I)
+TOC_LEADER_RE = re.compile(r"\.{4,}(?=\s*(?:[A-Z]-)?\d+(?:-\d+)?\s*$)")
 COPYRIGHT_RE = re.compile(
     r"(?:\bcopyright\b|©|all rights reserved|siemens industry software)", re.I
 )
 IMAGE_CAPTION_RE = re.compile(
     r"^(?:figure|fig\.|image|illustration|screen(?:shot)?)\s+"
     r"(?:[A-Z]?\d[\w.-]*|[ivxlcdm]+)\b\s*[:.-]?",
+    re.I,
+)
+FIGURE_PAGE_RE = re.compile(
+    r"\b(?:diagram|illustration|flow[ -]?chart|modeling sequence|relationship map)\b",
     re.I,
 )
 STEP_RE = re.compile(r"^\s*(\d{1,3})[.)]\s+", re.M)
@@ -155,6 +160,7 @@ class EvidenceSpec:
 
 def _clean(value: Any) -> str:
     text = str(value or "").replace("\u00a0", " ").replace("\u200b", "")
+    text = TOC_LEADER_RE.sub(" ", text)
     text = re.sub(r"[ \t]+", " ", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
@@ -1539,6 +1545,63 @@ def _write_json(path: Path, value: Any, *, pretty: bool = False) -> None:
     temporary.replace(path)
 
 
+def _figure_caption(page: fitz.Page, bbox: fitz.Rect) -> str:
+    candidates: list[tuple[float, str]] = []
+    for block in page.get_text("blocks", sort=True):
+        text = _clean(block[4])
+        if not text or not FIGURE_PAGE_RE.search(text):
+            continue
+        block_box = fitz.Rect(block[:4])
+        distance = min(abs(bbox.y0 - block_box.y1), abs(block_box.y0 - bbox.y1))
+        candidates.append((distance, text))
+    return min(candidates, default=(0, "Diagram from the manual"))[1][:240]
+
+
+def _extract_manual_figures(pdf_paths: Sequence[Path], config: Settings) -> int:
+    """Build a sidecar catalog of manual diagrams without changing retrieval records."""
+    config.manual_figures_dir.mkdir(parents=True, exist_ok=True)
+    catalog: list[dict[str, Any]] = []
+    expected_files: set[str] = set()
+    for pdf_path in pdf_paths:
+        with fitz.open(pdf_path) as doc:
+            manual = _clean((doc.metadata or {}).get("title")) or pdf_path.stem
+            for page_index, page in enumerate(doc):
+                for image_index, info in enumerate(page.get_image_info(xrefs=True)):
+                    bbox = fitz.Rect(info["bbox"])
+                    if bbox.width < 120 or bbox.height < 40 or bbox.get_area() < 5_000:
+                        continue
+                    identity = f"{pdf_path.name}:{page_index + 1}:{image_index}:{tuple(bbox)}"
+                    figure_id = f"fig_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+                    xref = int(info.get("xref", 0))
+                    extracted = doc.extract_image(xref) if xref else {}
+                    extension = str(extracted.get("ext", "")).casefold()
+                    image = extracted.get("image", b"")
+                    if extension not in {"png", "jpg", "jpeg"} or not image:
+                        extension = "png"
+                        image = page.get_pixmap(
+                            matrix=fitz.Matrix(1.5, 1.5), clip=bbox, alpha=False
+                        ).tobytes("png")
+                    filename = f"{figure_id}.{extension}"
+                    output_path = config.manual_figures_dir / filename
+                    output_path.write_bytes(image)
+                    expected_files.add(filename)
+                    catalog.append(
+                        {
+                            "figure_id": figure_id,
+                            "manual": manual,
+                            "source_file": pdf_path.name,
+                            "pdf_page": page_index + 1,
+                            "caption": _figure_caption(page, bbox),
+                            "path": f"manual_figures/{filename}",
+                        }
+                    )
+    for stale in config.manual_figures_dir.iterdir():
+        if stale.is_file() and stale.name not in expected_files:
+            stale.unlink()
+    _write_json(config.manual_figures_path, catalog, pretty=True)
+    return len(catalog)
+
+
 def _indexable_segments(
     segments: list[RetrievalSegment],
     config: Settings | None = None,
@@ -1706,14 +1769,27 @@ def build_indexes(
         _representation_metadata(item) for item in representation_records
     ]
 
-    shutil.rmtree(config.chroma_dir, ignore_errors=True)
-    config.chroma_dir.mkdir(parents=True, exist_ok=True)
-    (config.chroma_dir / ".gitkeep").write_text("\n", encoding="utf-8")
+    import chromadb
+
+    if config.chroma_mode == "local":
+        shutil.rmtree(config.chroma_dir, ignore_errors=True)
+        config.chroma_dir.mkdir(parents=True, exist_ok=True)
+        (config.chroma_dir / ".gitkeep").write_text("\n", encoding="utf-8")
+        client = chromadb.PersistentClient(path=str(config.chroma_dir))
+    else:
+        client = chromadb.HttpClient(
+            host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+        )
+        for collection_name in (CHROMA_COLLECTION, REPRESENTATION_COLLECTION):
+            try:
+                client.delete_collection(collection_name)
+            except Exception:
+                pass
     embedding_model = create_embedding_model(config)
     vector_store = Chroma(
         collection_name=CHROMA_COLLECTION,
         embedding_function=embedding_model,
-        persist_directory=str(config.chroma_dir),
+        client=client,
     )
     for start in range(0, len(segments), 256):
         end = start + 256
@@ -1725,7 +1801,7 @@ def build_indexes(
     representation_store = Chroma(
         collection_name=REPRESENTATION_COLLECTION,
         embedding_function=embedding_model,
-        persist_directory=str(config.chroma_dir),
+        client=client,
     )
     for start in range(0, len(representation_records), 256):
         end = start + 256
@@ -1748,11 +1824,14 @@ def build_indexes(
     ):
         logger.info("Indexed %s: %d retrieval segments", manual, count)
     logger.info("Indexed %d deterministic search representations", len(representation_records))
-    return validate_indexes(config, require_schema=False)
+    return validate_indexes(config, require_schema=False, chroma_client=client)
 
 
 def validate_indexes(
-    config: Settings = settings, *, require_schema: bool = True
+    config: Settings = settings,
+    *,
+    require_schema: bool = True,
+    chroma_client: Any | None = None,
 ) -> int:
     """Require Chroma, BM25, and retrieval_segments.json to share IDs."""
     import chromadb
@@ -1782,8 +1861,14 @@ def validate_indexes(
         payload = pickle.load(handle)
     bm25_ids = list(payload.get("segment_ids", []))
 
-    client = chromadb.PersistentClient(path=str(config.chroma_dir))
-    collection = client.get_collection(CHROMA_COLLECTION)
+    client = chroma_client or (
+        chromadb.PersistentClient(path=str(config.chroma_dir))
+        if config.chroma_mode == "local"
+        else chromadb.HttpClient(
+            host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+        )
+    )
+    collection = client.get_collection(config.chroma_collection)
     chroma_ids = list(collection.get(include=[])["ids"])
     representation_collection = client.get_collection(REPRESENTATION_COLLECTION)
     chroma_representation_ids = list(
@@ -1863,6 +1948,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
     pdf_paths = sorted(config.manuals_dir.glob("*.pdf"))
     if not pdf_paths:
         raise FileNotFoundError(f"No PDF manuals found in {config.manuals_dir}")
+    manual_figure_count = _extract_manual_figures(pdf_paths, config)
     current_files = {path.name for path in pdf_paths}
     removed = sorted(set(old_entries) - current_files)
 
@@ -1931,9 +2017,23 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         pretty=True,
     )
     (config.indexes_dir / "chunks.json").unlink(missing_ok=True)
+    chroma_indexes_exist = (config.chroma_dir / "chroma.sqlite3").exists()
+    if config.chroma_mode == "server":
+        try:
+            import chromadb
+
+            client = chromadb.HttpClient(
+                host=config.chroma_host, port=config.chroma_port, ssl=config.chroma_ssl
+            )
+            chroma_indexes_exist = all(
+                client.get_collection(name).count() > 0
+                for name in (CHROMA_COLLECTION, REPRESENTATION_COLLECTION)
+            )
+        except Exception:
+            chroma_indexes_exist = False
     index_artifacts_exist = (
         config.bm25_path.exists()
-        and (config.chroma_dir / "chroma.sqlite3").exists()
+        and chroma_indexes_exist
         and config.heading_index_path.exists()
         and config.concept_index_path.exists()
         and config.ingestion_audit_path.exists()
@@ -1946,11 +2046,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         or old_manifest.get("ingestion_pipeline_version") != INGESTION_PIPELINE_VERSION
         or not index_artifacts_exist
     )
-    indexed_segments = (
-        build_indexes(all_segments, config)
-        if indexes_rebuilt
-        else validate_indexes(config)
-    )
+    indexed_segments = build_indexes(all_segments, config) if indexes_rebuilt else validate_indexes(config)
 
     manifest = {
         "version": INDEX_SCHEMA_VERSION,
@@ -1969,6 +2065,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         "heading_record_count": len(heading_index),
         "concept_record_count": len(concept_index),
         "ingestion_audit_manual_count": len(audits),
+        "manual_figure_count": manual_figure_count,
         "effective_embedding_token_limit": _effective_embedding_limit(config),
         "chroma_collection": CHROMA_COLLECTION,
         "representation_chroma_collection": REPRESENTATION_COLLECTION,

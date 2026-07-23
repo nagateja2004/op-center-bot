@@ -74,11 +74,13 @@ def test_diagram_prompt_accepts_only_verified_facts() -> None:
         field in DIAGRAM_GENERATION_PROMPT
         for field in (
             "{diagram_type}", "{entities}", "{relationships}", "{decisions}",
-            "{outcomes}", "{source_ids}", "{diagram_rules}",
+            "{outcomes}", "{source_ids}", "{diagram_rules}", "{evidence}",
+            "{standalone_question}", "{verified_answer}", "{relevant_aspects}",
         )
     )
-    assert "{evidence}" not in DIAGRAM_GENERATION_PROMPT
-    assert "{standalone_question}" not in DIAGRAM_GENERATION_PROMPT
+    assert "Cited EvidenceUnits only" in DIAGRAM_GENERATION_PROMPT
+    assert "fewer than two meaningful relationships" in DIAGRAM_GENERATION_PROMPT
+    assert "NO_DIAGRAM" in DIAGRAM_GENERATION_PROMPT
 
 
 def test_generation_prompts_request_plain_text_only() -> None:
@@ -92,7 +94,5 @@ def test_prompts_remain_concise() -> None:
     assert len(EVIDENCE_GRADING_PROMPT) < 2_000
     assert len(ANSWER_GENERATION_PROMPT) < 1_200
     assert len(ANSWER_VERIFICATION_PROMPT) < 1_200
-    assert all(len(prompt) < 700 for prompt in (
-        QUERY_BROADENING_PROMPT,
-        DIAGRAM_GENERATION_PROMPT,
-    ))
+    assert len(QUERY_BROADENING_PROMPT) < 700
+    assert len(DIAGRAM_GENERATION_PROMPT) < 2_500

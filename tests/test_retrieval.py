@@ -2,6 +2,7 @@ import pytest
 from types import SimpleNamespace
 
 import src.retrieval as retrieval
+from src.config import Settings
 from src.retrieval import deduplicate_results, reciprocal_rank_fusion
 from src.schemas import RetrievedDocument
 
@@ -14,6 +15,23 @@ def result(chunk_id: str, scores: dict[str, float]) -> RetrievedDocument:
         "metadata": {},
         "retrieval_scores": scores,
     }
+
+
+def test_production_chroma_client_uses_configured_http_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    client = object()
+
+    def fake_http_client(**kwargs):
+        captured.update(kwargs)
+        return client
+
+    monkeypatch.setattr(retrieval.chromadb, "HttpClient", fake_http_client)
+    config = Settings(chroma_mode="server", chroma_host="chroma", chroma_port=8443, chroma_ssl=True)
+
+    assert retrieval.create_chroma_client(config) is client
+    assert captured == {"host": "chroma", "port": 8443, "ssl": True}
 
 
 def test_rrf_uses_ranks_not_raw_scores() -> None:
@@ -106,7 +124,7 @@ def test_exact_body_heading_retrieval_excludes_toc() -> None:
             ["Portal Studio Control", "Web Part"],
             ["components inside Portal Studio web parts"],
             ["Portal Studio"],
-            {"Controls", "Adding a Control to a Web Part"},
+            {"Controls", "Adding a Control to a Web Part", "Creating a Web Part"},
         ),
     ],
 )
