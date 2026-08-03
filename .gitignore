@@ -15,6 +15,10 @@ __pycache__/
 *~
 .coverage
 htmlcov/
+evaluation_results/*
+!evaluation_results/accepted-baseline.json
+production_monitor_report.json
+production_issue.md
 .cache/
 data/chat_memory.sqlite
 data/chat_memory.sqlite-*

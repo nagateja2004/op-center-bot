@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import secrets
 import time
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -35,6 +36,7 @@ class ChatRequest(BaseModel):
     thread_id: UUID | None = None
     diagram_enabled: bool = True
     diagram_type: Literal["auto", "hierarchy", "relationship", "process", "decision", "architecture"] = "auto"
+    include_evaluation_context: bool = False
 
     @field_validator("message")
     @classmethod
@@ -82,6 +84,36 @@ def _source_payload(state: dict[str, Any]) -> list[dict[str, Any]]:
                 item["table_rows"] = document.get("metadata", {}).get("table_rows", [])
         payload.append(item)
     return payload
+
+
+def _evaluation_context(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return bounded cited evidence for an authenticated evaluation run."""
+    documents = state.get("reranked_docs", [])
+    context: list[dict[str, Any]] = []
+    remaining_chars = 12_000
+    for source in state.get("sources", [])[:8]:
+        item = source.model_dump() if hasattr(source, "model_dump") else dict(source)
+        source_id = str(item.get("source_id", ""))
+        if not (source_id.startswith("S") and source_id[1:].isdigit()):
+            continue
+        index = int(source_id[1:]) - 1
+        if not 0 <= index < len(documents):
+            continue
+        document = documents[index]
+        text = str(document.get("text") or document.get("page_content") or "")
+        if not text or remaining_chars <= 0:
+            continue
+        text = text[: min(4_000, remaining_chars)]
+        remaining_chars -= len(text)
+        context.append({
+            "source_id": source_id,
+            "manual": str(item.get("manual") or item.get("source") or ""),
+            "chapter": str(item.get("chapter") or ""),
+            "section": str(item.get("section") or ""),
+            "page": item.get("printed_page") or item.get("pdf_page"),
+            "text": text,
+        })
+    return context
 
 
 @lru_cache(maxsize=2)
@@ -161,6 +193,11 @@ def _align_answer_with_manual_figures(
 
 @router.post("/chat", response_model=ChatAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def create_chat(payload: ChatRequest, request: Request) -> ChatAccepted:
+    if payload.include_evaluation_context:
+        supplied_token = request.headers.get("X-Evaluation-Token", "")
+        expected_token = settings.evaluation_api_token
+        if not expected_token or not secrets.compare_digest(supplied_token, expected_token):
+            raise HTTPException(status_code=403, detail="Evaluation context is not available.")
     request_id = getattr(request.state, "request_id", str(uuid4()))
     session_id = payload.session_id or uuid4()
     conversation_id = payload.conversation_id or uuid4()
@@ -200,10 +237,27 @@ async def stream_chat(
     if raw_payload is None:
         raise HTTPException(status_code=404, detail="Unknown or already streamed request")
     payload = ChatRequest.model_validate_json(raw_payload)
+    if payload.include_evaluation_context:
+        supplied_token = request.headers.get("X-Evaluation-Token", "")
+        expected_token = settings.evaluation_api_token
+        if not expected_token or not secrets.compare_digest(supplied_token, expected_token):
+            raise HTTPException(status_code=403, detail="Evaluation context is not available.")
 
     async def events():
         graph_started = time.perf_counter()
         config = {
+            "run_name": "opcenter_chat",
+            "tags": ["opcenter-rag", "streaming-api"],
+            "metadata": {
+                "request_id": request_id,
+                "session_id": str(payload.session_id),
+                "conversation_id": str(payload.conversation_id),
+                "client_thread_id": str(payload.thread_id),
+                "diagram_enabled": payload.diagram_enabled,
+                "diagram_type": payload.diagram_type,
+                "evaluation_run": payload.include_evaluation_context,
+                "deployment_environment": settings.deployment_environment,
+            },
             "configurable": {
                 "thread_id": f"{payload.conversation_id}:{payload.thread_id}",
                 "conversation_id": str(payload.conversation_id),
@@ -231,6 +285,11 @@ async def stream_chat(
             answer = state.get("answer", "No answer was generated.")
             basic_chat = bool(state.get("basic_chat"))
             sources = [] if basic_chat else _source_payload(state)
+            evaluation_context = (
+                _evaluation_context(state)
+                if payload.include_evaluation_context and not basic_chat
+                else []
+            )
             manual_figures = [] if basic_chat else _manual_figure_payload(state)
             answer = _align_answer_with_manual_figures(answer, manual_figures)
             for chunk in re.findall(r"\S+\s*", answer):
@@ -258,6 +317,11 @@ async def stream_chat(
                         "dot": "" if basic_chat or manual_figures else _safe_dot(state.get("diagram_dot", "")),
                     },
                     "manual_figures": manual_figures,
+                    **(
+                        {"evaluation_context": evaluation_context}
+                        if payload.include_evaluation_context
+                        else {}
+                    ),
                 },
             )
             await get_groq_limiter().set_status(request_id, "complete")

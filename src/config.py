@@ -28,6 +28,12 @@ def _env_path(name: str, default: Path) -> Path:
 @dataclass(frozen=True, slots=True)
 class Settings:
     groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    deployment_environment: str = field(
+        default_factory=lambda: os.getenv("DEPLOYMENT_ENVIRONMENT", "local").strip() or "local"
+    )
+    evaluation_api_token: str = field(
+        default_factory=lambda: os.getenv("EVALUATION_API_TOKEN", "").strip()
+    )
     checkpoint_backend: str = field(
         default_factory=lambda: os.getenv("CHECKPOINT_BACKEND", "postgres").strip().casefold()
     )

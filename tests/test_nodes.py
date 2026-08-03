@@ -787,6 +787,28 @@ def test_verifier_failure_runs_deterministic_citation_checks(monkeypatch) -> Non
     assert [source.source_id for source in update["sources"]] == ["S1"]
 
 
+def test_verifier_cannot_remove_every_valid_citation(monkeypatch) -> None:
+    monkeypatch.setattr(nodes, "call_llm", lambda *args, **kwargs: "Rewritten without citations.")
+
+    update = nodes.verify_answer(
+        {
+            "standalone_question": "What is a Factory?",
+            "required_aspects": ["Factory definition"],
+            "answer": "A Factory is an accounting division [S1].",
+            "reranked_docs": [document(1)],
+        }
+    )
+
+    assert update["answer"] == "A Factory is an accounting division [S1]."
+    assert update["grounded"] is True
+    assert [source.source_id for source in update["sources"]] == ["S1"]
+
+
+def test_citation_normalization_accepts_spaces_inside_brackets() -> None:
+    assert nodes._normalize_citations("Supported [ S2 ].") == "Supported [S2]."
+    assert nodes._normalize_citations("Supported [ S1, S3 ].") == "Supported [S1] [S3]."
+
+
 def test_diagram_failure_does_not_fail_verified_answer(monkeypatch) -> None:
     monkeypatch.setattr(
         nodes,

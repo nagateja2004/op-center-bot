@@ -13,30 +13,73 @@ LangGraph checkpoints preserve conversation memory in PostgreSQL.
 
 ## Architecture
 
-```text
-Browser
-  -> Streamlit frontend
-  -> POST /v1/chat
-  -> GET /v1/chat/{request_id}/stream (SSE)
-  -> FastAPI backend replicas
-       -> LangGraph compiled once per backend process
-       -> Chroma server + BM25 hybrid retrieval
-       -> all-MiniLM-L6-v2 query embeddings
-       -> ms-marco-MiniLM-L-6-v2 cross-encoder reranking
-       -> role-specific asynchronous Groq models
-       -> PostgreSQL conversation checkpoints
-       -> Redis limits, queues, cache, request status, and thread ownership
+### System architecture
 
-Offline ingestion
-  manuals/*.pdf
-    -> EvidenceUnits and RetrievalSegments
-    -> BM25 and metadata indexes in indexes/
-    -> embeddings in the Chroma server
-    -> extracted manual diagrams in indexes/manual_figures/
+```mermaid
+flowchart TB
+    subgraph Client["Client layer"]
+        User["User"] --> UI["Streamlit chat UI"]
+    end
+
+    subgraph Application["Application layer · Docker Compose"]
+        UI -->|"POST /v1/chat"| API["FastAPI · 2 replicas"]
+        API -->|"SSE progress and answer"| UI
+        API <--> Requests[("Redis<br/>pending requests · ownership · cache")]
+        API --> Graph["Compiled LangGraph workflow"]
+        Graph <--> Memory[("PostgreSQL<br/>conversation checkpoints")]
+    end
+
+    subgraph RAG["RAG and model layer"]
+        Graph --> Retrieval["Hybrid retrieval<br/>Chroma + BM25 + weighted RRF"]
+        Retrieval --> Context["EvidenceUnit resolution<br/>neighbor expansion · deterministic compression"]
+        Context --> Reranker["Local cross-encoder reranker"]
+        Reranker -->|"ranked evidence"| Graph
+        Graph --> Groq["Role-specific Groq LLMs<br/>planner · grader · answer · verifier · diagram"]
+        Groq <--> Limits[("Redis per-model admission control")]
+    end
+
+    subgraph Knowledge["Knowledge preparation · offline"]
+        PDFs["Opcenter PDF manuals"] --> Ingest["Explicit ingestion job"]
+        Ingest --> Units[("EvidenceUnits and retrieval segments")]
+        Units --> Vectors[("Chroma vectors")]
+        Units --> Lexical[("BM25 index")]
+        Ingest --> Figures[("Extracted manual figures")]
+        Vectors --> Retrieval
+        Lexical --> Retrieval
+        Figures --> Graph
+    end
+
+    subgraph Operations["Quality and operations"]
+        Graph -. "nested traces" .-> LangSmith["LangSmith"]
+        API -. "health · readiness · latency · queues" .-> Endpoints["/health · /ready · /metrics"]
+        Golden["50-case golden dataset"] --> Evaluator["Deterministic checks + LLM judge"]
+        Evaluator -->|"evaluation questions"| API
+        API -->|"answers + bounded evidence"| Evaluator
+        Evaluator --> Gate{"CI quality gate"}
+        Gate -->|"pass"| Release["Release candidate"]
+        Gate -->|"fail"| Diagnose["HTML report + LangSmith trace"]
+    end
 ```
 
-The application never rebuilds indexes during startup or a chat request.
-Ingestion is always an explicit offline command.
+| Layer | Main implementation | Responsibility |
+| --- | --- | --- |
+| Interface | Streamlit | Anonymous chat UI, session identifiers, streamed rendering |
+| API | FastAPI | Request validation, replica-safe request acceptance, SSE, health and readiness |
+| Orchestration | LangGraph | Conditional RAG flow, bounded retry, checkpoints and node-level tracing |
+| Retrieval | Chroma, BM25 and weighted RRF | Semantic and lexical candidate retrieval |
+| Evidence processing | EvidenceUnits, neighbor expansion and cross-encoder | Restore complete source context, compress deterministically and rerank |
+| Generation | Role-specific Groq models | Planning, grading, grounded answering, verification and optional diagrams |
+| State | PostgreSQL and Redis | Short-term conversation checkpoints, request handoff, ownership, caches and limits |
+| Observability | LangSmith and built-in endpoints | Traces, latency, errors, queue depth, token and cost inspection |
+| Quality | Golden dataset and GitHub Actions | Deterministic metrics, LLM-as-a-judge and regression gates |
+
+Important design boundaries:
+
+- **Offline knowledge plane:** ingestion is an explicit command; startup and chat requests never rebuild indexes.
+- **Short-term memory only:** PostgreSQL persists a conversation thread so follow-up questions can use earlier turns. The bot does not build a permanent user profile or recall unrelated conversations.
+- **Deterministic context compression:** structured sentences, procedure steps and table rows are selected from EvidenceUnits. The runtime does not use `LLMChainExtractor` or `LLMChainFilter` for compression.
+- **Protected evaluation evidence:** only requests authenticated with `EVALUATION_API_TOKEN` can receive bounded evidence excerpts for the judge; normal users cannot request them.
+- **Failure containment:** one retrieval broadening attempt is allowed, diagram failure does not discard a grounded answer, and queue/provider retries are bounded.
 
 ## Main features
 
@@ -50,7 +93,10 @@ Ingestion is always an explicit offline command.
 - Anonymous browser-session isolation without user accounts
 - Two backend replicas in Docker Compose
 - Bounded Groq and local inference queues
-- Prometheus-compatible metrics
+- Built-in latency, inference, and queue metrics without a monitoring service dependency
+- Optional LangSmith traces for the complete LangGraph request path
+- A 50-case golden dataset with JSON and visual HTML evaluation reports
+- CI quality gates with fixed thresholds and accepted-baseline regression checks
 
 ## Requirements
 
@@ -67,7 +113,8 @@ used for local development.
 From the repository root:
 
 ```bash
-cd ~/Desktop/opcenter-chatbot/opcenter-chatbot
+git clone https://github.com/nagateja2004/op-center-bot.git
+cd op-center-bot
 touch .env
 chmod 600 .env
 ```
@@ -78,6 +125,31 @@ Add at least the following to `.env`:
 GROQ_API_KEY=gsk_replace_with_your_key
 TOKENIZERS_PARALLELISM=false
 ```
+
+To send LangGraph and Groq traces to LangSmith, add:
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_replace_with_your_key
+LANGSMITH_PROJECT=opcenter-rag
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+```
+
+Tracing is optional. Leave `LANGSMITH_TRACING` unset or set it to `false` when
+manual content must not leave the deployment environment.
+
+For a candidate/staging deployment that will be scored by the semantic
+evaluator, also add a long random secret:
+
+```dotenv
+EVALUATION_API_TOKEN=replace_with_a_long_random_staging_secret
+GROQ_JUDGE_MODEL=llama-3.1-8b-instant
+```
+
+Use the same `EVALUATION_API_TOKEN` as a GitHub Actions repository secret. It
+protects the bounded evidence excerpts used by the judge. Normal chat requests
+cannot request or receive those excerpts. Do not enable this evaluation route
+on the current production deployment.
 
 Place the PDF manuals directly in `manuals/`. Subdirectories are not scanned.
 
@@ -210,6 +282,7 @@ default local Compose deployment.
 | `INFERENCE_MAX_CONCURRENCY` | `4` |
 | `INFERENCE_MAX_QUEUE_DEPTH` | `32` |
 | `GROQ_REQUEST_TIMEOUT` | `90` seconds |
+| `GROQ_JUDGE_MODEL` | `llama-3.1-8b-instant` (evaluation process only) |
 
 Each Groq role has a primary model and at most one fallback. Override a role
 with:
@@ -223,6 +296,23 @@ GROQ_ANSWER_MAX_OUTPUT_TOKENS=4096
 
 Supported role prefixes are `PLANNER`, `QUERY_BROADENING`, `GRADER`, `ANSWER`,
 `VERIFIER`, and `DIAGRAM`.
+
+### LangSmith tracing
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LANGSMITH_TRACING` | `false` | Enable automatic LangGraph and LLM tracing |
+| `LANGSMITH_API_KEY` | None | LangSmith API key; keep it only in `.env` or a secrets manager |
+| `LANGSMITH_PROJECT` | `default` | Trace project; use `opcenter-rag` for this application |
+| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` | LangSmith API endpoint |
+
+Each graph trace is named `opcenter_chat` and tagged `opcenter-rag` and
+`streaming-api`. Request, session, conversation, client thread, and diagram
+settings are attached as searchable metadata. LangSmith automatically nests
+the LangGraph nodes and LangChain model calls under the graph run.
+
+LangSmith may capture graph inputs, outputs, and retrieved manual evidence.
+Enable it only after confirming that the deployment's data policy permits this.
 
 ### Limits and request safety
 
@@ -338,7 +428,7 @@ Other endpoints:
 | --- | --- |
 | `GET /health` | Process liveness |
 | `GET /ready` | Dependency and model readiness |
-| `GET /metrics` | Prometheus-compatible metrics |
+| `GET /metrics` | Built-in process-local metrics in text format |
 
 ## Anonymous sessions
 
@@ -356,6 +446,28 @@ causes the backend to create a new conversation and thread.
 
 ## Retrieval and answer flow
 
+```mermaid
+flowchart TD
+    Start(("START")) --> Understand["understand_question<br/>basic-chat check · deterministic or LLM plan"]
+    Understand -->|"basic chat"| Done(("END"))
+    Understand -->|"manual question"| Retrieve["retrieve_documents<br/>Chroma + BM25 + weighted RRF"]
+    Retrieve --> Expand["expand_context<br/>neighbors · complete EvidenceUnits · compression"]
+    Expand --> Rerank["rerank_documents<br/>local cross-encoder"]
+    Rerank --> Grade["grade_evidence<br/>one grade per required aspect"]
+    Grade -->|"sufficient or partial"| Answer["generate_answer<br/>grounded response with source IDs"]
+    Grade -->|"retry once"| Broaden["broaden_query<br/>target missing evidence"]
+    Broaden --> Retrieve
+    Grade -->|"insufficient or out of scope"| Fallback["generate_fallback<br/>safe limitation"]
+    Fallback --> Done
+    Answer --> Verify["verify_answer<br/>normalize citations · remove unsupported claims"]
+    Verify -->|"grounded and diagram requested or useful"| Diagram["generate_diagram<br/>Graphviz DOT + deterministic validation"]
+    Verify -->|"answer ready"| Done
+    Diagram --> Done
+
+    Memory[("PostgreSQL short-term thread memory")] <--> Understand
+    Nodes["Every node"] -. "timing and errors" .-> Trace["One nested LangSmith trace"]
+```
+
 1. Classify basic chat, direct questions, multi-aspect questions, and follow-ups.
 2. Preserve explicitly named concepts for comparisons and relationship questions.
 3. Retrieve with Chroma and BM25, then combine candidates with weighted RRF.
@@ -370,6 +482,53 @@ causes the backend to create a new conversation and thread.
 Simple definition questions use deterministic planning. The LLM planner is
 reserved for ambiguous or multi-aspect questions. Conversation-dependent
 follow-ups are not stored in the final-answer cache.
+
+### LLM-call profile
+
+The number of LLM calls is dynamic; retrieval, context expansion, compression,
+reranking, caching and citation parsing do not call an LLM.
+
+| Role | Calls in one user request | When it runs |
+| --- | ---: | --- |
+| Planner | 0 or 1 | Ambiguous, follow-up or multi-aspect questions; simple direct questions use deterministic planning |
+| Evidence grader | 1 per required aspect per retrieval pass | Checks whether each requested aspect is supported |
+| Query broadener | 0 or 1 | Only when evidence is missing after the first retrieval |
+| Answer model | 0 or 1 | Only for sufficient or partial evidence |
+| Verifier | 0 or 1 | Validates and corrects a generated answer |
+| Diagram model | 0 or 1 | Only when a grounded diagram is requested or useful |
+| Evaluation judge | 1 per evaluated case, plus at most one error retry | Runs outside the user request during evaluation |
+
+A typical single-aspect question with no retry or diagram uses **three RAG LLM
+calls**: grader, answer and verifier. An ambiguous question normally adds the
+planner. Multi-aspect grading, one retrieval retry or an optional diagram can
+increase the total. Basic greetings use zero RAG LLM calls.
+
+### Memory and context behavior
+
+```mermaid
+sequenceDiagram
+    participant Browser as Browser session
+    participant API as FastAPI
+    participant Redis as Redis ownership/request store
+    participant Graph as LangGraph
+    participant PG as PostgreSQL checkpoints
+
+    Browser->>API: question + session/conversation/thread UUIDs
+    API->>Redis: validate thread ownership and store pending request
+    API-->>Browser: request_id
+    Browser->>API: open SSE stream using request_id
+    API->>Graph: run question with conversation_id:thread_id
+    Graph->>PG: load earlier turns from this thread
+    Graph->>Graph: resolve follow-up into a standalone question
+    Graph->>PG: save updated checkpoint
+    Graph-->>API: node updates and final state
+    API-->>Browser: SSE progress, answer, citations and optional diagram
+```
+
+This is durable **short-term conversational memory**, not long-term personal
+memory. A related question such as “How do I define it?” can use the preceding
+“What is a Factory?” turn in the same thread. A new conversation receives a new
+thread and does not inherit that context.
 
 ## Diagrams
 
@@ -447,11 +606,315 @@ source .venv/bin/activate
 pytest -q
 ```
 
-Run the production evaluation corpus:
+Run the 50-case golden evaluation corpus:
 
 ```bash
 docker compose --profile tools run --rm evaluate
 ```
+
+### Golden dataset
+
+The versioned dataset in
+[`tests/evaluation_questions.json`](tests/evaluation_questions.json) contains
+an initial 50 cases covering direct and indirect questions, conversation-dependent
+follow-ups, procedures, fields and tables, comparisons, insufficient evidence,
+out-of-scope routing, Execution Electronics, and Execution Discrete.
+
+| Category | Cases | What it validates |
+| --- | ---: | --- |
+| Direct | 7 | Definitions and explicit concepts |
+| Indirect | 8 | Semantic retrieval without exact wording |
+| Follow-up | 5 | Short-term conversation context and thread memory |
+| Procedure | 5 | Ordered, grounded instructions |
+| Table/field | 5 | Structured field and column retrieval |
+| Comparison | 4 | Coverage of every requested concept |
+| Unsupported | 3 | In-scope questions with insufficient evidence |
+| Irrelevant | 3 | Out-of-scope routing |
+| Execution Electronics | 5 | Product-specific manual routing |
+| Execution Discrete | 5 | Product-specific manual routing |
+| **Initial total** | **50** | End-to-end RAG regression coverage; human-approved production cases can extend it |
+
+### Approved final LLMOps workflow
+
+> **Deployment boundary:** Every automation in this diagram is implemented in
+> the repository. It remains inactive until the repository is published and its
+> GitHub environments, secrets, variables, and staging server are configured.
+> The currently deployed production server was not changed while building it.
+
+```mermaid
+flowchart TD
+    Change["1. Change code, prompt, retrieval or model locally"] --> LocalTest["2. Run local tests"]
+    LocalTest --> Push["3. Commit and push a feature branch"]
+    Push --> PR["4. Create or update pull request"]
+    PR --> StagePR["5. Deploy the PR commit to staging"]
+    StagePR --> PRCases["6. Run 10 representative golden cases"]
+    PRCases --> PRRAG["7. Execute the LangGraph RAG pipeline"]
+
+    PRRAG --> PRTrace["Store staging traces in LangSmith"]
+    PRRAG --> PREval["Deterministic checks and LLM-as-a-judge"]
+    PREval --> PRGate{"8. PR CI gate passed?"}
+
+    PRGate -->|"No"| Diagnose["Inspect the HTML report and LangSmith trace"]
+    Diagnose --> Fix["Fix locally, commit and push again"]
+    Fix --> PR
+
+    PRGate -->|"Yes"| Merge["9. Human reviews and merges the PR"]
+    Merge --> StageMain["10. Deploy the merged commit to staging"]
+    StageMain --> FullCases["11. Run the full 50+ case dataset"]
+    FullCases --> FullEval["Deterministic checks, LLM judge and baseline comparison"]
+    FullCases --> FullTrace["Store full evaluation traces in LangSmith"]
+    FullEval --> ReleaseGate{"12. Release CI gate passed?"}
+
+    ReleaseGate -->|"No"| Diagnose
+    ReleaseGate -->|"Yes"| Production["13. Deploy the evaluated commit to production"]
+    Production --> Monitor["14. Monitor production traces daily"]
+    Monitor --> ProductionCheck{"Verified production problem found?"}
+
+    ProductionCheck -->|"No"| Monitor
+    ProductionCheck -->|"Yes"| Review["15. Human reviews the trace and manuals"]
+    Review --> NewCase["16. Add an approved case to the golden dataset"]
+    NewCase --> DatasetPR["17. Create a golden-dataset pull request"]
+    DatasetPR --> PR
+```
+
+The **PR gate** is the fast pre-merge check: it evaluates 10 cases and blocks
+the pull request when quality, latency, or error thresholds fail. The
+**release gate** runs after merge against all 50+ cases on staging and blocks
+production deployment when the full evaluation or accepted-baseline comparison
+fails. A pull request is not the `git pull` command: developers push their
+feature branch, then request that GitHub merge it into `main` after review.
+
+The separate judge model runs at temperature `0` and scores relevance,
+correctness, faithfulness, completeness, and clarity from 1 to 5. A case passes
+when its average is at least 4.0 and its correctness and faithfulness scores are
+both at least 4.0. The aggregate gate requires a semantic average of at least
+4.0, an 85% semantic pass rate, and zero judge errors. The callable PR workflow
+runs a 10-case subset with one case from every dataset category; manual and
+nightly runs use all 50. Treat these as starting thresholds and calibrate them
+with human-reviewed reports before making the semantic gate a required merge
+check. Baseline comparison is skipped for the subset because a 10-case report
+must not be compared with a 50-case baseline.
+
+Only human-confirmed production failures may become new golden cases. A failed
+gate must lead back through a code change, PR update, fresh deployment, and new
+evaluation; it must never reuse the previously failed deployment.
+
+| Capability | Status |
+| --- | --- |
+| 50-case golden dataset and deterministic evaluation | Implemented |
+| JSON/HTML reports and fixed/baseline CI thresholds | Implemented |
+| LangSmith trace configuration | Implemented and locally verified |
+| Protected retrieval evidence for evaluation | Implemented |
+| LLM-as-a-judge semantic scoring and token accounting | Implemented |
+| Callable CI gate for a candidate/staging URL | Implemented |
+| SSH deployment of each internal PR/merge commit to staging | Implemented; requires GitHub/server configuration |
+| Automatic production release after the merged commit passes all 50 cases on staging | Implemented; requires GitHub/server configuration |
+| Daily LangSmith error, latency, cost, and feedback monitoring | Implemented; requires LangSmith credentials |
+| Production observation → GitHub review issue | Implemented |
+| Human-approved issue → validated golden-dataset PR | Implemented |
+
+### Activate the complete delivery pipeline
+
+The workflow uses the existing Docker Compose deployment and standard SSH. The
+server must have Docker Compose, and the SSH user must be allowed to run it.
+Create separate staging and production directories before enabling the
+workflow. Each directory must already contain its own `.env`, manuals, and
+indexes. Deployment deliberately never copies or replaces those files.
+
+Use different Compose project names and LangSmith projects:
+
+```dotenv
+# Staging server .env
+COMPOSE_PROJECT_NAME=opcenter-staging
+COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml
+DEPLOYMENT_ENVIRONMENT=staging
+APP_PORT=8502
+POSTGRES_PORT=5433
+CHROMA_EXPOSE_PORT=8002
+BACKEND_EXPOSE_PORT=8003
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=replace_with_your_langsmith_key
+LANGSMITH_PROJECT=opcenter-rag-staging
+EVALUATION_API_TOKEN=the_same_random_value_stored_in_github
+```
+
+```dotenv
+# Production server .env
+COMPOSE_PROJECT_NAME=opcenter-production
+DEPLOYMENT_ENVIRONMENT=production
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=replace_with_your_langsmith_key
+LANGSMITH_PROJECT=opcenter-rag-production
+```
+
+Create GitHub `staging` and `production` environments. A required reviewer on
+the production environment provides a final human release approval if desired.
+
+Repository secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`, `STAGING_SSH_KNOWN_HOSTS` | Deploy the candidate commit to staging with a pinned host key |
+| `PRODUCTION_SSH_HOST`, `PRODUCTION_SSH_USER`, `PRODUCTION_SSH_KEY`, `PRODUCTION_SSH_KNOWN_HOSTS` | Release the evaluated merge commit with a pinned host key |
+| `GROQ_API_KEY` | Run the separate semantic judge |
+| `EVALUATION_API_TOKEN` | Authenticate protected staging evidence |
+| `LANGSMITH_API_KEY` | Read production trace aggregates and trace links |
+| `LANGSMITH_WORKSPACE_ID` | Optional; required for organization-scoped LangSmith keys |
+
+Repository variables:
+
+| Variable | Example/default |
+| --- | --- |
+| `STAGING_DEPLOY_PATH` | `/srv/opcenter-staging` |
+| `STAGING_SSH_PORT` | `22` |
+| `STAGING_RAG_BACKEND_URL` | Public or runner-accessible staging API URL |
+| `PRODUCTION_DEPLOY_PATH` | `/srv/opcenter-production` |
+| `PRODUCTION_SSH_PORT` | `22` |
+| `LANGSMITH_PRODUCTION_PROJECT` | `opcenter-rag-production` |
+| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` |
+| `MONITOR_LOOKBACK_MINUTES` | `1440` |
+| `MONITOR_MAX_ERROR_RATE` | `0.05` |
+| `MONITOR_MAX_P95_LATENCY` | `75` |
+| `MONITOR_MIN_FEEDBACK_SCORE` | `0.5` |
+| `MONITOR_MAX_AVERAGE_COST_USD` | `0` disables the cost alert; cost is still reported |
+
+The resulting behavior is:
+
+1. An internal, non-draft PR is deployed to staging.
+2. One case from every golden-dataset category runs through deterministic and
+   semantic evaluation. Failure blocks the workflow; success permits merge.
+3. A merge to `main` is deployed to staging again and evaluated with the full
+   dataset. Production is released only after this gate passes.
+4. LangSmith production traces are checked daily for errors, p95 latency,
+   average cost, and low `correctness` or `user_feedback` scores.
+5. A detected issue creates or updates a GitHub issue without copying prompts,
+   answers, or manual content into GitHub.
+6. A human validates the trace and expected answer, adds the JSON golden case,
+   and applies `golden-approved`. GitHub then validates it and opens a dataset PR.
+
+Configure GitHub branch protection after the first run and require the
+candidate evaluation check. Merging remains a human decision; deployment after
+the merge is automatic. Pull requests from forks are not deployed because
+repository secrets are intentionally unavailable to them.
+
+The staging override binds its backend to `127.0.0.1:8003` by default. Route a
+staging HTTPS hostname to that port through the server's reverse proxy and use
+that URL for `STAGING_RAG_BACKEND_URL`. If staging and production are on
+different servers, the port overrides can be changed or omitted.
+
+### Current evaluation workflow and metrics
+
+```mermaid
+flowchart LR
+    Gold["Golden dataset<br/>question + expected output"] --> RAG["Running RAG API"]
+    RAG --> Actual["Actual model answer"]
+    RAG --> Context["Retrieved and cited context"]
+    Gold --> Rules["Deterministic evaluator"]
+    Actual --> Rules
+    Context --> Rules
+    Gold --> Judge["LLM-as-a-judge"]
+    Actual --> Judge
+    Context --> Judge
+
+    Rules --> Quality["Quality metrics<br/>terms · manual · status<br/>citations · diagrams"]
+    Rules --> Latency["Latency metrics<br/>mean · median/p50 · p95"]
+    Rules --> Cases["Per-case deterministic checks"]
+    Judge --> Semantic["Semantic metrics<br/>relevance · correctness · faithfulness<br/>completeness · clarity"]
+
+    Quality --> Gate{"CI quality gate"}
+    Latency --> Gate
+    Cases --> Gate
+    Semantic --> Gate
+    Gate -->|"pass"| Merge["Allow merge or deployment"]
+    Gate -->|"fail"| Block["Block regression"]
+
+    Quality --> JSON["Machine-readable JSON report"]
+    Latency --> JSON
+    Cases --> JSON
+    Quality --> Dashboard["Shareable HTML dashboard"]
+    Latency --> Dashboard
+    Cases --> Dashboard
+    Semantic --> JSON
+    Semantic --> Dashboard
+```
+
+| Metric | Evaluation rule |
+| --- | --- |
+| Overall pass rate | Every applicable check for a case must pass |
+| Answer-term accuracy | Any expected term, or all explicitly required terms, appears in the answer or source metadata |
+| Manual-routing accuracy | Retrieved sources contain every expected manual label |
+| Evidence-status accuracy | Actual status matches `sufficient`, `in_scope_insufficient`, or `out_of_scope` |
+| Citation-ID accuracy | For sufficient answers, answer citation IDs exactly match returned source IDs |
+| Diagram-render accuracy | Generated-diagram state matches the golden expectation where specified |
+| Latency | End-to-end mean, median/p50, and p95 response time |
+| Semantic quality | Separate LLM judge scores relevance, correctness, faithfulness, completeness, and clarity from 1 to 5 |
+| Judge tokens | Input, output, and total tokens used by semantic evaluation |
+
+### CI-gated evaluation
+
+The evaluator writes its JSON and HTML reports before returning a non-zero exit
+code when a gate fails. The default gate is:
+
+| Check | Default threshold |
+| --- | ---: |
+| Overall pass rate | At least 85% |
+| Answer-term accuracy | At least 85% |
+| Manual-routing accuracy | At least 90% |
+| Evidence-status accuracy | At least 90% |
+| Citation-ID accuracy | At least 95% |
+| p95 latency | At most 75 seconds |
+| Evaluation errors | 0 |
+| Semantic-quality average | At least 4.0/5 when the judge is enabled |
+| Semantic pass rate | At least 85% when the judge is enabled |
+| Judge errors | 0 |
+| Normalized drop from accepted baseline | At most 3 percentage points |
+
+Run the gate against a local or candidate/staging backend:
+
+```bash
+EVALUATION_API_TOKEN=replace_with_the_staging_secret \
+GROQ_API_KEY=gsk_replace_with_your_key \
+python evaluation.py --backend-url http://127.0.0.1:8000 --llm-judge --gate
+```
+
+After reviewing a successful report, it can be accepted as the historical
+baseline:
+
+```bash
+cp evaluation_results/golden-50-latest.json \
+  evaluation_results/accepted-baseline.json
+python evaluation.py --backend-url http://127.0.0.1:8000 --gate \
+  --llm-judge --baseline evaluation_results/accepted-baseline.json
+```
+
+Every threshold can be overridden with command-line options such as
+`--min-citation-id-accuracy`, `--max-p95-latency`, and `--max-regression`.
+
+The `RAG evaluation gate` GitHub Actions workflow performs a deterministic gate
+contract check on relevant pull requests and pushes. Its candidate job runs the full
+50 cases nightly or manually, and 10 cases when called by a PR deployment
+workflow. Configure the repository variable `STAGING_RAG_BACKEND_URL`, the
+repository secrets `GROQ_API_KEY` and `EVALUATION_API_TOKEN`, or pass a
+branch-specific candidate `backend_url` through `workflow_call`. Never configure
+this variable with the production URL. Reports are uploaded as workflow
+artifacts even when the gate fails.
+
+For a true pull-request merge gate, deploy the PR branch first, call this
+reusable workflow with that deployment URL, and make the caller's live evaluation
+job a required status check in GitHub branch protection. This avoids evaluating
+a shared backend that does not contain the proposed code.
+
+[`delivery-pipeline.yml`](.github/workflows/delivery-pipeline.yml) now performs
+that deployment and calls the reusable gate. On `main`, it repeats evaluation
+with the full dataset before releasing the same commit to production.
+
+The default outputs are stored at `evaluation_results/golden-50-latest.json`
+and `evaluation_results/golden-50-latest.html`. The JSON contains the aggregate
+metrics and machine-readable test cases. Open the HTML report in a browser to
+show summary cards and expandable cases with the input, gold expectations,
+actual model answer, cited retrieval context, checks, and latency.
+For a locally running backend, use `python evaluation.py`; `--dataset` and
+`--output` can override the input and report paths.
 
 Run the bounded 50-user load test:
 
@@ -459,9 +922,10 @@ Run the bounded 50-user load test:
 docker compose --profile tools run --rm load-test
 ```
 
-The evaluator checks answer terms, manual routing, evidence status, citation
-IDs, diagrams, and latency. The load test reports completion rate, latency, and
-time to first streamed answer token.
+The README intentionally does not publish unexecuted scores. Run the evaluator
+against the indexed manuals to populate the HTML metric cards with reproducible
+results. The load test separately reports completion rate, latency, and time to
+first streamed answer token.
 
 ## Project layout
 
@@ -478,8 +942,18 @@ src/llm.py                 asynchronous role-specific Groq calls
 src/groq_limits.py         Redis per-model admission control
 src/embeddings.py          shared embedding and reranker models
 src/cache.py               Redis query/retrieval/answer caches
-src/observability.py       logs and Prometheus metrics
+src/observability.py       logs and built-in process metrics
+evaluation.py              deterministic/semantic evaluator and HTML dashboard
+production_monitor.py      LangSmith production regression monitor
+scripts/deploy_remote.sh   staging/production SSH deployment contract
+scripts/add_golden_case.py validated human-review dataset intake
+tests/evaluation_questions.json  versioned 50-case golden dataset
+.github/workflows/evaluation-gate.yml  CI and scheduled quality gate
+.github/workflows/delivery-pipeline.yml PR staging gate and production release
+.github/workflows/production-monitor.yml trace-to-review issue automation
+.github/workflows/golden-case-intake.yml approved issue-to-dataset PR automation
 docker-compose.yml         local production-style deployment
+docker-compose.staging.yml isolated staging backend port
 ```
 
 ## Operational notes
