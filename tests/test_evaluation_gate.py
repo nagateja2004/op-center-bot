@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from evaluation import (
     DEFAULT_THRESHOLDS,
+    evidence_status_hit,
     evaluate_gate,
     judge_response,
     parse_semantic_judgment,
@@ -49,7 +50,7 @@ class EvaluationGateTests(unittest.TestCase):
             passed=40,
             errors=1,
             citation_id_accuracy=0.89,
-            latency_seconds={"p95": 35.0},
+            latency_seconds={"p95": 80.0},
         )
         gate = evaluate_gate(
             candidate,
@@ -133,8 +134,61 @@ class EvaluationGateTests(unittest.TestCase):
         )
 
         self.assertEqual(completions.kwargs["temperature"], 0)
+        self.assertEqual(completions.kwargs["max_tokens"], 1_000)
         self.assertEqual(completions.kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(judgment["tokens"]["total"], 120)
+
+    def test_judge_retries_one_invalid_response(self):
+        class Completions:
+            calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ValueError("invalid JSON")
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                        "scores": {dimension: 5 for dimension in (
+                            "relevance", "correctness", "faithfulness", "completeness", "clarity"
+                        )},
+                        "reason": "Grounded.",
+                    })))],
+                    usage=SimpleNamespace(
+                        prompt_tokens=10,
+                        completion_tokens=5,
+                        total_tokens=15,
+                    ),
+                )
+
+        completions = Completions()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+        judgment = judge_response(
+            client,
+            "openai/gpt-oss-20b",
+            {"question": "What is a Factory?", "expected_status": "sufficient"},
+            {
+                "answer": "A Factory is a division [S1].",
+                "evidence": {"status": "sufficient"},
+                "evaluation_context": [
+                    {"source_id": "S1", "text": "A Factory is a division."}
+                ],
+            },
+        )
+
+        self.assertEqual(completions.calls, 2)
+        self.assertTrue(judgment["passed"])
+
+    def test_case_can_explicitly_accept_partial_or_sufficient_status(self):
+        case = {
+            "expected_status": "sufficient",
+            "accepted_statuses": ["sufficient", "partial"],
+        }
+
+        self.assertTrue(evidence_status_hit(case, {"evidence": {"status": "partial"}}))
+        self.assertFalse(
+            evidence_status_hit(case, {"evidence": {"status": "in_scope_insufficient"}})
+        )
 
 
 if __name__ == "__main__":

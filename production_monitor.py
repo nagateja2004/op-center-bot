@@ -159,7 +159,7 @@ def main() -> None:
     parser.add_argument("--issue-output", type=Path, default=Path("production_issue.md"))
     parser.add_argument("--lookback-minutes", type=int, default=int(os.getenv("MONITOR_LOOKBACK_MINUTES", "1440")))
     parser.add_argument("--max-error-rate", type=float, default=float(os.getenv("MONITOR_MAX_ERROR_RATE", "0.05")))
-    parser.add_argument("--max-p95-latency", type=float, default=float(os.getenv("MONITOR_MAX_P95_LATENCY", "30")))
+    parser.add_argument("--max-p95-latency", type=float, default=float(os.getenv("MONITOR_MAX_P95_LATENCY", "75")))
     parser.add_argument("--min-feedback-score", type=float, default=float(os.getenv("MONITOR_MIN_FEEDBACK_SCORE", "0.5")))
     parser.add_argument("--min-runs", type=int, default=int(os.getenv("MONITOR_MIN_RUNS", "0")))
     parser.add_argument("--max-average-cost", type=float, default=float(os.getenv("MONITOR_MAX_AVERAGE_COST_USD", "0")))

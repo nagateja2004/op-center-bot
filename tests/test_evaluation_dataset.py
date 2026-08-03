@@ -32,6 +32,9 @@ def test_golden_cases_have_required_labels() -> None:
         assert case["expected_status"] in {
             "sufficient", "partial", "in_scope_insufficient", "out_of_scope"
         }
+        assert set(case.get("accepted_statuses", [case["expected_status"]])) <= {
+            "sufficient", "partial", "in_scope_insufficient", "out_of_scope"
+        }
         assert isinstance(case["expected_terms"], list)
 
 

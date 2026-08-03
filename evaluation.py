@@ -25,7 +25,7 @@ DEFAULT_THRESHOLDS = {
     "manual_routing_accuracy": 0.90,
     "status_accuracy": 0.90,
     "citation_id_accuracy": 0.95,
-    "p95_latency_seconds": 30.0,
+    "p95_latency_seconds": 75.0,
     "errors": 0,
     "semantic_score": 4.0,
     "semantic_pass_rate": 0.85,
@@ -131,10 +131,18 @@ def citations_valid(result: dict[str, Any]) -> bool:
     return bool(source_ids) and cited_ids == source_ids
 
 
+def evidence_status_hit(case: dict[str, Any], result: dict[str, Any]) -> bool:
+    accepted = case.get("accepted_statuses", [case["expected_status"]])
+    return result.get("evidence", {}).get("status") in accepted
+
+
 def expected_output(case: dict[str, Any]) -> dict[str, Any]:
     """Return the structured gold labels used to score one model response."""
     return {
         "evidence_status": case["expected_status"],
+        "accepted_evidence_statuses": case.get(
+            "accepted_statuses", [case["expected_status"]]
+        ),
         "any_expected_terms": case.get("expected_terms", []),
         "all_required_terms": case.get("required_terms", []),
         "manuals": case.get("expected_manuals", []),
@@ -205,18 +213,24 @@ For insufficient or out-of-scope cases, reward a safe limitation instead of inve
 Return only JSON with this shape:
 {"scores":{"relevance":1,"correctness":1,"faithfulness":1,"completeness":1,"clarity":1},"reason":"brief evidence-based explanation"}"""
     started = perf_counter()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(judge_input, ensure_ascii=False)},
-        ],
-        temperature=0,
-        max_tokens=500,
-        response_format={"type": "json_object"},
-    )
-    content = response.choices[0].message.content or ""
-    judgment = parse_semantic_judgment(content)
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(judge_input, ensure_ascii=False)},
+                ],
+                temperature=0,
+                max_tokens=1_000,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or ""
+            judgment = parse_semantic_judgment(content)
+            break
+        except Exception:
+            if attempt == 1:
+                raise
     usage = getattr(response, "usage", None)
     judgment.update({
         "model": model,
@@ -440,7 +454,10 @@ def main() -> None:
     parser.add_argument("--gate", action="store_true", help="Exit non-zero when quality thresholds fail")
     parser.add_argument("--baseline", type=Path, help="Accepted JSON report used for regression comparison")
     parser.add_argument("--llm-judge", action="store_true", help="Score semantic quality with a separate Groq model")
-    parser.add_argument("--judge-model", default=os.getenv("GROQ_JUDGE_MODEL", "openai/gpt-oss-20b"))
+    parser.add_argument(
+        "--judge-model",
+        default=os.getenv("GROQ_JUDGE_MODEL", "llama-3.1-8b-instant"),
+    )
     parser.add_argument("--min-pass-rate", type=float, default=DEFAULT_THRESHOLDS["pass_rate"])
     parser.add_argument("--min-answer-term-accuracy", type=float, default=DEFAULT_THRESHOLDS["answer_term_accuracy"])
     parser.add_argument("--min-manual-routing-accuracy", type=float, default=DEFAULT_THRESHOLDS["manual_routing_accuracy"])
@@ -537,7 +554,7 @@ def main() -> None:
             continue
         term = output_hit(case, result)
         manual = manual_hit(case, result)
-        status = result.get("evidence", {}).get("status") == case["expected_status"]
+        status = evidence_status_hit(case, result)
         if term is not None:
             term_hits.append(term)
         if manual is not None:

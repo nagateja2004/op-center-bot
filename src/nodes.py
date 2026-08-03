@@ -90,6 +90,9 @@ CLEARLY_UNRELATED_RE = re.compile(
     re.I,
 )
 CITATION_RE = re.compile(r"\[S(\d+)\]")
+SPACED_CITATION_RE = re.compile(
+    r"\[\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*\]", re.I
+)
 GROUPED_CITATION_RE = re.compile(r"\[(S\d+(?:\s*[,;]\s*S\d+)+)\]", re.I)
 DECORATIVE_CITATION_RE = re.compile(
     r"【\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*】", re.I
@@ -746,6 +749,10 @@ async def averify_answer(state: RAGState) -> RAGState:
             ).strip()
         )
     except GroqRequestError:
+        corrected = _normalize_citations(draft)
+    if not _citation_numbers(corrected, len(documents)) and _citation_numbers(
+        draft, len(documents)
+    ):
         corrected = _normalize_citations(draft)
     invalid_citations = any(
         not 1 <= int(number) <= len(documents)
@@ -2489,6 +2496,7 @@ def _remove_invalid_citations(answer: str, evidence_count: int) -> str:
 def _normalize_citations(answer: str) -> str:
     """Convert grouped citations like [S1, S3] into independently valid IDs."""
     answer = DECORATIVE_CITATION_RE.sub(lambda match: f"[{match.group(1)}]", answer)
+    answer = SPACED_CITATION_RE.sub(lambda match: f"[{match.group(1)}]", answer)
     return GROUPED_CITATION_RE.sub(
         lambda match: " ".join(
             f"[{source_id.upper()}]"

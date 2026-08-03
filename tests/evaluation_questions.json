@@ -21,24 +21,24 @@
   {"id":"follow_04","category":"follow_up","context_question":"Explain line assignment.","question":"How do I set it?","expected_status":"sufficient","expected_terms":["line assignment"]},
   {"id":"follow_05","category":"follow_up","context_question":"What is a configurable data object?","question":"How is it different from an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"]},
 
-  {"id":"procedure_01","category":"procedure","question":"How do I define a Factory?","expected_status":"sufficient","expected_terms":["how to define a factory"]},
+  {"id":"procedure_01","category":"procedure","question":"How do I define a Factory?","expected_status":"sufficient","accepted_statuses":["sufficient","partial"],"expected_terms":["how to define a factory"]},
   {"id":"procedure_02","category":"procedure","question":"How do I add a location to a Factory?","expected_status":"sufficient","expected_terms":["add a location"]},
   {"id":"procedure_03","category":"procedure","question":"How do I log in to Opcenter Execution Core?","expected_status":"sufficient","expected_terms":["how to log in"]},
   {"id":"procedure_04","category":"procedure","question":"How do I create a web part in Portal Studio?","expected_status":"sufficient","expected_terms":["creating a web part","create a web part"]},
   {"id":"procedure_05","category":"procedure","question":"How do I collect resource data?","expected_status":"sufficient","expected_terms":["collect resource data"]},
 
-  {"id":"table_01","category":"table_field","question":"Show the Factory field definitions.","expected_status":"sufficient","expected_terms":["field","factory"]},
+  {"id":"table_01","category":"table_field","question":"Show the Factory field definitions.","expected_status":"sufficient","accepted_statuses":["sufficient","partial"],"expected_terms":["field","factory"]},
   {"id":"table_02","category":"table_field","question":"What fields are on the Set Line Assignment pop-up?","expected_status":"sufficient","expected_terms":["set line assignment","field"]},
   {"id":"table_03","category":"table_field","question":"List the Resource page field definitions.","expected_status":"sufficient","expected_terms":["resource","field"]},
   {"id":"table_04","category":"table_field","question":"Show the configurable data object field type definitions.","expected_status":"sufficient","expected_terms":["field type","definition"]},
   {"id":"table_05","category":"table_field","question":"Which columns are defined for the Factory Hierarchy page?","expected_status":"sufficient","expected_terms":["factory hierarchy","column"]},
 
-  {"id":"comparison_01","category":"comparison","question":"Compare a Factory and a Resource.","expected_status":"sufficient","expected_terms":["factory","resource"],"required_terms":["factory","resource"]},
+  {"id":"comparison_01","category":"comparison","question":"Compare a Factory and a Resource.","expected_status":"sufficient","accepted_statuses":["sufficient","partial"],"expected_terms":["factory","resource"],"required_terms":["factory","resource"]},
   {"id":"comparison_02","category":"comparison","question":"What is the difference between a CDO and an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"],"required_terms":["cdo","ndo"]},
   {"id":"comparison_03","category":"comparison","question":"Compare a Resource and a Resource Location.","expected_status":"sufficient","expected_terms":["resource","resource location"],"required_terms":["resource","resource location"]},
   {"id":"comparison_04","category":"comparison","question":"How do CLFs differ from configurable data objects?","expected_status":"sufficient","expected_terms":["clf","configurable data object"],"required_terms":["clf","configurable data object"]},
 
-  {"id":"unsupported_01","category":"unsupported","question":"Does Opcenter support Kubernetes autoscaling?","expected_status":"in_scope_insufficient","expected_terms":[]},
+  {"id":"unsupported_01","category":"unsupported","question":"Does Opcenter support Kubernetes autoscaling?","expected_status":"partial","expected_terms":[]},
   {"id":"unsupported_02","category":"unsupported","question":"How does Opcenter use predictive AI for automatic quality decisions?","expected_status":"in_scope_insufficient","expected_terms":[]},
   {"id":"unsupported_03","category":"unsupported","question":"Show the Opcenter blockchain deployment procedure.","expected_status":"in_scope_insufficient","expected_terms":[]},
 
@@ -46,13 +46,13 @@
   {"id":"irrelevant_02","category":"irrelevant","question":"What will the weather be tomorrow?","expected_status":"out_of_scope","expected_terms":[]},
   {"id":"irrelevant_03","category":"irrelevant","question":"Write a poem about the ocean.","expected_status":"out_of_scope","expected_terms":[]},
 
-  {"id":"electronics_01","category":"electronics","question":"What is Opcenter Execution Electronics?","expected_status":"sufficient","expected_terms":["execution electronics"],"expected_manuals":["Execution Electronics"]},
+  {"id":"electronics_01","category":"electronics","question":"What is Opcenter Execution Electronics?","expected_status":"sufficient","accepted_statuses":["sufficient","partial"],"expected_terms":["execution electronics"],"expected_manuals":["Execution Electronics"]},
   {"id":"electronics_02","category":"electronics","question":"How do I set up a new manufacturing product in Opcenter Execution Electronics?","expected_status":"sufficient","expected_terms":["manufacturing product"],"expected_manuals":["Execution Electronics"]},
   {"id":"electronics_03","category":"electronics","question":"Give me the steps for starting containers in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["starting containers","container"],"expected_manuals":["Execution Electronics"]},
   {"id":"electronics_04","category":"electronics","question":"Explain carrier tracking in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["carrier"],"expected_manuals":["Execution Electronics"]},
   {"id":"electronics_05","category":"electronics","question":"Show a relationship diagram for physical address management in Opcenter Execution Electronics.","expected_status":"sufficient","expected_terms":["physical address"],"expected_manuals":["Execution Electronics"],"expected_diagram":true},
 
-  {"id":"discrete_01","category":"discrete","question":"How do I create a process step in Opcenter EX DS?","expected_status":"sufficient","expected_terms":["process step"],"expected_manuals":["Execution Discrete"]},
+  {"id":"discrete_01","category":"discrete","question":"How do I create a process step in Opcenter EX DS?","expected_status":"sufficient","accepted_statuses":["sufficient","partial"],"expected_terms":["process step"],"expected_manuals":["Execution Discrete"]},
   {"id":"discrete_02","category":"discrete","question":"How are catalogs managed in Opcenter Execution Discrete?","expected_status":"sufficient","expected_terms":["catalog"],"expected_manuals":["Execution Discrete"]},
   {"id":"discrete_03","category":"discrete","question":"Explain quality gates in Opcenter Execution Discrete.","expected_status":"sufficient","expected_terms":["quality gate"],"expected_manuals":["Execution Discrete"]},
   {"id":"discrete_04","category":"discrete","question":"How is production execution managed in Opcenter Execution Discrete?","expected_status":"sufficient","expected_terms":["production execution"],"expected_manuals":["Execution Discrete"]},

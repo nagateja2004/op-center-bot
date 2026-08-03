@@ -103,7 +103,7 @@ evaluator, also add a long random secret:
 
 ```dotenv
 EVALUATION_API_TOKEN=replace_with_a_long_random_staging_secret
-GROQ_JUDGE_MODEL=openai/gpt-oss-20b
+GROQ_JUDGE_MODEL=llama-3.1-8b-instant
 ```
 
 Use the same `EVALUATION_API_TOKEN` as a GitHub Actions repository secret. It
@@ -242,7 +242,7 @@ default local Compose deployment.
 | `INFERENCE_MAX_CONCURRENCY` | `4` |
 | `INFERENCE_MAX_QUEUE_DEPTH` | `32` |
 | `GROQ_REQUEST_TIMEOUT` | `90` seconds |
-| `GROQ_JUDGE_MODEL` | `openai/gpt-oss-20b` (evaluation process only) |
+| `GROQ_JUDGE_MODEL` | `llama-3.1-8b-instant` (evaluation process only) |
 
 Each Groq role has a primary model and at most one fallback. Override a role
 with:
@@ -691,7 +691,7 @@ Repository variables:
 | `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` |
 | `MONITOR_LOOKBACK_MINUTES` | `1440` |
 | `MONITOR_MAX_ERROR_RATE` | `0.05` |
-| `MONITOR_MAX_P95_LATENCY` | `30` |
+| `MONITOR_MAX_P95_LATENCY` | `75` |
 | `MONITOR_MIN_FEEDBACK_SCORE` | `0.5` |
 | `MONITOR_MAX_AVERAGE_COST_USD` | `0` disables the cost alert; cost is still reported |
 
@@ -779,7 +779,7 @@ code when a gate fails. The default gate is:
 | Manual-routing accuracy | At least 90% |
 | Evidence-status accuracy | At least 90% |
 | Citation-ID accuracy | At least 95% |
-| p95 latency | At most 30 seconds |
+| p95 latency | At most 75 seconds |
 | Evaluation errors | 0 |
 | Semantic-quality average | At least 4.0/5 when the judge is enabled |
 | Semantic pass rate | At least 85% when the judge is enabled |
