@@ -13,33 +13,73 @@ LangGraph checkpoints preserve conversation memory in PostgreSQL.
 
 ## Architecture
 
+### System architecture
+
 ```mermaid
-flowchart LR
-    User["User"] --> UI["Streamlit chat UI"]
-    UI -->|"POST request"| API["FastAPI backend"]
-    API -->|"SSE answer stream"| UI
-    API --> Graph["LangGraph RAG workflow"]
+flowchart TB
+    subgraph Client["Client layer"]
+        User["User"] --> UI["Streamlit chat UI"]
+    end
 
-    Graph --> Models["Role-specific Groq LLMs"]
-    Graph --> Retrieval["Hybrid retrieval and reranking"]
-    Retrieval --> Chroma[("Chroma vectors")]
-    Retrieval --> BM25[("BM25 index")]
-    Retrieval --> Encoder["Cross-encoder reranker"]
-    Graph <--> Postgres[("PostgreSQL checkpoints")]
-    API <--> Redis[("Redis queues, cache and limits")]
+    subgraph Application["Application layer · Docker Compose"]
+        UI -->|"POST /v1/chat"| API["FastAPI · 2 replicas"]
+        API -->|"SSE progress and answer"| UI
+        API <--> Requests[("Redis<br/>pending requests · ownership · cache")]
+        API --> Graph["Compiled LangGraph workflow"]
+        Graph <--> Memory[("PostgreSQL<br/>conversation checkpoints")]
+    end
 
-    Graph -. "traces" .-> LangSmith["LangSmith"]
-    API -. "latency and queue metrics" .-> Metrics["Built-in /metrics endpoint"]
+    subgraph RAG["RAG and model layer"]
+        Graph --> Retrieval["Hybrid retrieval<br/>Chroma + BM25 + weighted RRF"]
+        Retrieval --> Context["EvidenceUnit resolution<br/>neighbor expansion · deterministic compression"]
+        Context --> Reranker["Local cross-encoder reranker"]
+        Reranker -->|"ranked evidence"| Graph
+        Graph --> Groq["Role-specific Groq LLMs<br/>planner · grader · answer · verifier · diagram"]
+        Groq <--> Limits[("Redis per-model admission control")]
+    end
 
-    PDFs["Opcenter PDF manuals"] --> Ingest["Offline ingestion"]
-    Ingest --> Evidence["EvidenceUnits and retrieval segments"]
-    Evidence --> Chroma
-    Evidence --> BM25
-    Ingest --> Figures["Extracted manual figures"]
+    subgraph Knowledge["Knowledge preparation · offline"]
+        PDFs["Opcenter PDF manuals"] --> Ingest["Explicit ingestion job"]
+        Ingest --> Units[("EvidenceUnits and retrieval segments")]
+        Units --> Vectors[("Chroma vectors")]
+        Units --> Lexical[("BM25 index")]
+        Ingest --> Figures[("Extracted manual figures")]
+        Vectors --> Retrieval
+        Lexical --> Retrieval
+        Figures --> Graph
+    end
+
+    subgraph Operations["Quality and operations"]
+        Graph -. "nested traces" .-> LangSmith["LangSmith"]
+        API -. "health · readiness · latency · queues" .-> Endpoints["/health · /ready · /metrics"]
+        Golden["50-case golden dataset"] --> Evaluator["Deterministic checks + LLM judge"]
+        Evaluator -->|"evaluation questions"| API
+        API -->|"answers + bounded evidence"| Evaluator
+        Evaluator --> Gate{"CI quality gate"}
+        Gate -->|"pass"| Release["Release candidate"]
+        Gate -->|"fail"| Diagnose["HTML report + LangSmith trace"]
+    end
 ```
 
-The application never rebuilds indexes during startup or a chat request.
-Ingestion is always an explicit offline command.
+| Layer | Main implementation | Responsibility |
+| --- | --- | --- |
+| Interface | Streamlit | Anonymous chat UI, session identifiers, streamed rendering |
+| API | FastAPI | Request validation, replica-safe request acceptance, SSE, health and readiness |
+| Orchestration | LangGraph | Conditional RAG flow, bounded retry, checkpoints and node-level tracing |
+| Retrieval | Chroma, BM25 and weighted RRF | Semantic and lexical candidate retrieval |
+| Evidence processing | EvidenceUnits, neighbor expansion and cross-encoder | Restore complete source context, compress deterministically and rerank |
+| Generation | Role-specific Groq models | Planning, grading, grounded answering, verification and optional diagrams |
+| State | PostgreSQL and Redis | Short-term conversation checkpoints, request handoff, ownership, caches and limits |
+| Observability | LangSmith and built-in endpoints | Traces, latency, errors, queue depth, token and cost inspection |
+| Quality | Golden dataset and GitHub Actions | Deterministic metrics, LLM-as-a-judge and regression gates |
+
+Important design boundaries:
+
+- **Offline knowledge plane:** ingestion is an explicit command; startup and chat requests never rebuild indexes.
+- **Short-term memory only:** PostgreSQL persists a conversation thread so follow-up questions can use earlier turns. The bot does not build a permanent user profile or recall unrelated conversations.
+- **Deterministic context compression:** structured sentences, procedure steps and table rows are selected from EvidenceUnits. The runtime does not use `LLMChainExtractor` or `LLMChainFilter` for compression.
+- **Protected evaluation evidence:** only requests authenticated with `EVALUATION_API_TOKEN` can receive bounded evidence excerpts for the judge; normal users cannot request them.
+- **Failure containment:** one retrieval broadening attempt is allowed, diagram failure does not discard a grounded answer, and queue/provider retries are bounded.
 
 ## Main features
 
@@ -408,28 +448,24 @@ causes the backend to create a new conversation and thread.
 
 ```mermaid
 flowchart TD
-    Start(("Start")) --> Understand["Understand question"]
-    Understand -->|"basic chat"| Done(("End"))
-    Understand -->|"knowledge question"| Retrieve["Retrieve documents<br/>Chroma + BM25 + RRF"]
-    Retrieve --> Expand["Expand neighboring context"]
-    Expand --> Rerank["Cross-encoder reranking"]
-    Rerank --> Grade["Grade evidence by required aspect"]
-    Grade -->|"sufficient or partial"| Answer["Generate grounded answer"]
-    Grade -->|"retry once"| Broaden["Broaden query"]
+    Start(("START")) --> Understand["understand_question<br/>basic-chat check · deterministic or LLM plan"]
+    Understand -->|"basic chat"| Done(("END"))
+    Understand -->|"manual question"| Retrieve["retrieve_documents<br/>Chroma + BM25 + weighted RRF"]
+    Retrieve --> Expand["expand_context<br/>neighbors · complete EvidenceUnits · compression"]
+    Expand --> Rerank["rerank_documents<br/>local cross-encoder"]
+    Rerank --> Grade["grade_evidence<br/>one grade per required aspect"]
+    Grade -->|"sufficient or partial"| Answer["generate_answer<br/>grounded response with source IDs"]
+    Grade -->|"retry once"| Broaden["broaden_query<br/>target missing evidence"]
     Broaden --> Retrieve
-    Grade -->|"insufficient"| Fallback["Generate evidence-aware fallback"]
+    Grade -->|"insufficient or out of scope"| Fallback["generate_fallback<br/>safe limitation"]
     Fallback --> Done
-    Answer --> Verify["Validate citations and verify answer"]
-    Verify -->|"grounded and diagram useful"| Diagram["Generate and validate diagram"]
-    Verify -->|"answer complete"| Done
+    Answer --> Verify["verify_answer<br/>normalize citations · remove unsupported claims"]
+    Verify -->|"grounded and diagram requested or useful"| Diagram["generate_diagram<br/>Graphviz DOT + deterministic validation"]
+    Verify -->|"answer ready"| Done
     Diagram --> Done
 
-    Memory[("PostgreSQL conversation memory")] <--> Understand
-    Trace["LangSmith trace"] -.-> Understand
-    Trace -.-> Retrieve
-    Trace -.-> Grade
-    Trace -.-> Answer
-    Trace -.-> Verify
+    Memory[("PostgreSQL short-term thread memory")] <--> Understand
+    Nodes["Every node"] -. "timing and errors" .-> Trace["One nested LangSmith trace"]
 ```
 
 1. Classify basic chat, direct questions, multi-aspect questions, and follow-ups.
@@ -446,6 +482,53 @@ flowchart TD
 Simple definition questions use deterministic planning. The LLM planner is
 reserved for ambiguous or multi-aspect questions. Conversation-dependent
 follow-ups are not stored in the final-answer cache.
+
+### LLM-call profile
+
+The number of LLM calls is dynamic; retrieval, context expansion, compression,
+reranking, caching and citation parsing do not call an LLM.
+
+| Role | Calls in one user request | When it runs |
+| --- | ---: | --- |
+| Planner | 0 or 1 | Ambiguous, follow-up or multi-aspect questions; simple direct questions use deterministic planning |
+| Evidence grader | 1 per required aspect per retrieval pass | Checks whether each requested aspect is supported |
+| Query broadener | 0 or 1 | Only when evidence is missing after the first retrieval |
+| Answer model | 0 or 1 | Only for sufficient or partial evidence |
+| Verifier | 0 or 1 | Validates and corrects a generated answer |
+| Diagram model | 0 or 1 | Only when a grounded diagram is requested or useful |
+| Evaluation judge | 1 per evaluated case, plus at most one error retry | Runs outside the user request during evaluation |
+
+A typical single-aspect question with no retry or diagram uses **three RAG LLM
+calls**: grader, answer and verifier. An ambiguous question normally adds the
+planner. Multi-aspect grading, one retrieval retry or an optional diagram can
+increase the total. Basic greetings use zero RAG LLM calls.
+
+### Memory and context behavior
+
+```mermaid
+sequenceDiagram
+    participant Browser as Browser session
+    participant API as FastAPI
+    participant Redis as Redis ownership/request store
+    participant Graph as LangGraph
+    participant PG as PostgreSQL checkpoints
+
+    Browser->>API: question + session/conversation/thread UUIDs
+    API->>Redis: validate thread ownership and store pending request
+    API-->>Browser: request_id
+    Browser->>API: open SSE stream using request_id
+    API->>Graph: run question with conversation_id:thread_id
+    Graph->>PG: load earlier turns from this thread
+    Graph->>Graph: resolve follow-up into a standalone question
+    Graph->>PG: save updated checkpoint
+    Graph-->>API: node updates and final state
+    API-->>Browser: SSE progress, answer, citations and optional diagram
+```
+
+This is durable **short-term conversational memory**, not long-term personal
+memory. A related question such as “How do I define it?” can use the preceding
+“What is a Factory?” turn in the same thread. A new conversation receives a new
+thread and does not inherit that context.
 
 ## Diagrams
 
