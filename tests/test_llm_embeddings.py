@@ -309,6 +309,7 @@ def test_embeddings_are_local_and_normalized(monkeypatch: pytest.MonkeyPatch) ->
 
     assert captured["model_kwargs"] == {"device": "cpu"}
     assert captured["encode_kwargs"] == {"normalize_embeddings": True}
+    embeddings.create_embedding_model.cache_clear()
 
 
 def test_cross_encoder_scores_are_scalar_and_finite() -> None:

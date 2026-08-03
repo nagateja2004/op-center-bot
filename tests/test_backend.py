@@ -33,7 +33,7 @@ class FakeGraph:
                         "printed_page": "2-3",
                     }
                 ],
-                "reranked_docs": [{"metadata": {}}],
+                "reranked_docs": [{"text": "A Factory is a division.", "metadata": {}}],
                 "diagram_generated": True,
                 "diagram_dot": "digraph G { factory; }",
                 "evidence_status": "sufficient",
@@ -88,7 +88,20 @@ def test_health_ready_and_async_chat_stream(monkeypatch) -> None:
     assert "digraph G" in streamed.text
     assert "Fully supported" not in streamed.text
     assert '"status": "sufficient"' in streamed.text
+    assert '"evaluation_context"' not in streamed.text
     assert graph.config == {
+        "run_name": "opcenter_chat",
+        "tags": ["opcenter-rag", "streaming-api"],
+        "metadata": {
+            "request_id": request_id,
+            "session_id": identifiers["session_id"],
+            "conversation_id": identifiers["conversation_id"],
+            "client_thread_id": identifiers["thread_id"],
+            "diagram_enabled": True,
+            "diagram_type": "auto",
+            "evaluation_run": False,
+            "deployment_environment": "local",
+        },
         "configurable": {
             "thread_id": (
                 f"{identifiers['conversation_id']}:{identifiers['thread_id']}"
@@ -138,6 +151,41 @@ def test_chat_identifiers_are_both_new_or_both_reused() -> None:
         json={"message": "bad", "thread_id": first["thread_id"]},
     )
     assert invalid.status_code == 422
+
+
+def test_evaluation_context_requires_token_and_is_not_a_normal_chat_field(monkeypatch) -> None:
+    app.state.graph = FakeGraph()
+    app.state.request_store = FakeRequestStore()
+    monkeypatch.setattr(
+        chat_routes,
+        "settings",
+        SimpleNamespace(
+            evaluation_api_token="test-evaluation-token",
+            deployment_environment="test",
+        ),
+    )
+    client = TestClient(app)
+    payload = {
+        "message": "What is a Factory?",
+        "include_evaluation_context": True,
+    }
+
+    forbidden = client.post("/v1/chat", json=payload)
+    assert forbidden.status_code == 403
+
+    accepted = client.post(
+        "/v1/chat",
+        json=payload,
+        headers={"X-Evaluation-Token": "test-evaluation-token"},
+    )
+    assert accepted.status_code == 202
+    streamed = client.get(
+        f"/v1/chat/{accepted.json()['request_id']}/stream",
+        headers={"X-Evaluation-Token": "test-evaluation-token"},
+    )
+    assert streamed.status_code == 200
+    assert '"evaluation_context"' in streamed.text
+    assert "A Factory is a division." in streamed.text
 
 
 def test_manual_figure_payload_uses_retrieved_manual_page(

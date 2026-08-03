@@ -19,7 +19,7 @@ def test_planner_prompt_has_canonical_mapping_instructions() -> None:
         instruction in QUERY_PLANNING_PROMPT
         for instruction in (
             "preserving the user's original meaning",
-            "1-6 independent required_aspects",
+            "1-8 independent required_aspects",
             "exact manual phrases/headings",
             "canonical Opcenter terminology",
             "1-3 strong search_queries per aspect",
@@ -92,7 +92,7 @@ def test_generation_prompts_request_plain_text_only() -> None:
 def test_prompts_remain_concise() -> None:
     assert len(QUERY_PLANNING_PROMPT) < 2_500
     assert len(EVIDENCE_GRADING_PROMPT) < 2_000
-    assert len(ANSWER_GENERATION_PROMPT) < 1_200
-    assert len(ANSWER_VERIFICATION_PROMPT) < 1_200
+    assert len(ANSWER_GENERATION_PROMPT) < 1_600
+    assert len(ANSWER_VERIFICATION_PROMPT) < 1_400
     assert len(QUERY_BROADENING_PROMPT) < 700
     assert len(DIAGRAM_GENERATION_PROMPT) < 2_500

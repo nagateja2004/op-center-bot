@@ -22,6 +22,8 @@ dist/
 *~
 .coverage
 htmlcov/
+production_monitor_report.json
+production_issue.md
 .cache/
 data/*
 !data/.gitkeep

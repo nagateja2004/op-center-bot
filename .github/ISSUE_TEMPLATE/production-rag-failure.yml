@@ -1,0 +1,40 @@
+name: Production RAG failure
+description: Submit a human-reviewed production problem for the golden dataset
+title: "[Production RAG] "
+labels: [production-observation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Validate the expected behavior against the manuals before approval. Do not paste confidential manual content or user data.
+  - type: input
+    id: trace
+    attributes:
+      label: LangSmith trace URL
+      description: Authenticated trace link for reviewers
+    validations:
+      required: true
+  - type: textarea
+    id: review
+    attributes:
+      label: Human review
+      description: Explain the reproduced failure and validated expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: golden_case
+    attributes:
+      label: Golden case JSON
+      description: Use a new unique ID. Apply golden-approved only after this JSON is validated.
+      render: json
+      value: |
+        {
+          "id": "production_001",
+          "category": "production_failure",
+          "question": "Human-validated question",
+          "expected_status": "sufficient",
+          "expected_terms": ["required concept"],
+          "expected_manuals": []
+        }
+    validations:
+      required: true

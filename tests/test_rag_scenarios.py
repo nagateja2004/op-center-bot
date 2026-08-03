@@ -295,8 +295,8 @@ def test_diagram_only_when_evidence_supports_it(mocked_pipeline) -> None:
     assert unsupported["diagram_dot"] == ""
 
 
-def test_no_image_processing_code() -> None:
-    forbidden = ("get_images", "pixmap", "pytesseract", "st.image", "opencv", "cv2", "from pil")
+def test_no_ocr_processing_code() -> None:
+    forbidden = ("pytesseract", "opencv", "cv2", "from pil")
     code = "\n".join(
         path.read_text(encoding="utf-8").casefold()
         for path in (Path("src/ingest.py"), Path("app.py"))

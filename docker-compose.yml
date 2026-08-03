@@ -129,7 +129,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    command: ["python", "evaluation.py", "--backend-url", "http://backend:8000"]
+    command: ["python", "evaluation.py", "--backend-url", "http://backend:8000", "--llm-judge", "--gate"]
+    env_file:
+      - .env
+    volumes:
+      - ./evaluation_results:/app/evaluation_results
     depends_on:
       backend:
         condition: service_healthy

@@ -1,0 +1,48 @@
+name: Human-approved golden case intake
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  create-golden-case-pr:
+    if: github.event.label.name == 'golden-approved'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read and validate the human-reviewed case
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue view "$ISSUE_NUMBER" --json body --jq .body > "$RUNNER_TEMP/issue.md"
+          python scripts/add_golden_case.py \
+            --issue-body "$RUNNER_TEMP/issue.md" \
+            --source-issue "${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUMBER"
+          python -m json.tool tests/evaluation_questions.json >/dev/null
+          python -m unittest tests.test_evaluation_gate
+      - name: Create golden-dataset pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          branch="production-case-${ISSUE_NUMBER}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add tests/evaluation_questions.json
+          git commit -m "test: add human-approved production case #${ISSUE_NUMBER}"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Add human-approved production case #${ISSUE_NUMBER}" \
+            --body "Adds the reviewed regression case from #${ISSUE_NUMBER}. Closes #${ISSUE_NUMBER} after merge."

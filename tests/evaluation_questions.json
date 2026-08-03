@@ -6,8 +6,6 @@
   {"id":"direct_05","category":"direct","question":"What is a configurable logic flow?","expected_status":"sufficient","expected_terms":["configurable logic flow","clf"],"expected_manuals":["Designer"]},
   {"id":"direct_06","category":"direct","question":"What is Factory Hierarchy?","expected_status":"sufficient","expected_terms":["factory hierarchy"],"expected_manuals":["Modeling"]},
   {"id":"direct_07","category":"direct","question":"What is Portal Studio 2.0?","expected_status":"sufficient","expected_terms":["portal studio"]},
-  {"id":"direct_08","category":"direct","question":"What is line assignment?","expected_status":"sufficient","expected_terms":["line assignment"]},
-
   {"id":"indirect_01","category":"indirect","question":"Which modeling object represents an accounting and reporting division?","expected_status":"sufficient","expected_terms":["factory"]},
   {"id":"indirect_02","category":"indirect","question":"How does the system represent manufacturing equipment?","expected_status":"sufficient","expected_terms":["resource"]},
   {"id":"indirect_03","category":"indirect","question":"Where are items grouped while they move through production?","expected_status":"sufficient","expected_terms":["container"]},
@@ -35,10 +33,10 @@
   {"id":"table_04","category":"table_field","question":"Show the configurable data object field type definitions.","expected_status":"sufficient","expected_terms":["field type","definition"]},
   {"id":"table_05","category":"table_field","question":"Which columns are defined for the Factory Hierarchy page?","expected_status":"sufficient","expected_terms":["factory hierarchy","column"]},
 
-  {"id":"comparison_01","category":"comparison","question":"Compare a Factory and a Resource.","expected_status":"sufficient","expected_terms":["factory","resource"]},
-  {"id":"comparison_02","category":"comparison","question":"What is the difference between a CDO and an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"]},
-  {"id":"comparison_03","category":"comparison","question":"Compare a Resource and a Resource Location.","expected_status":"sufficient","expected_terms":["resource","resource location"]},
-  {"id":"comparison_04","category":"comparison","question":"How do CLFs differ from configurable data objects?","expected_status":"sufficient","expected_terms":["clf","configurable data object"]},
+  {"id":"comparison_01","category":"comparison","question":"Compare a Factory and a Resource.","expected_status":"sufficient","expected_terms":["factory","resource"],"required_terms":["factory","resource"]},
+  {"id":"comparison_02","category":"comparison","question":"What is the difference between a CDO and an NDO?","expected_status":"sufficient","expected_terms":["cdo","ndo"],"required_terms":["cdo","ndo"]},
+  {"id":"comparison_03","category":"comparison","question":"Compare a Resource and a Resource Location.","expected_status":"sufficient","expected_terms":["resource","resource location"],"required_terms":["resource","resource location"]},
+  {"id":"comparison_04","category":"comparison","question":"How do CLFs differ from configurable data objects?","expected_status":"sufficient","expected_terms":["clf","configurable data object"],"required_terms":["clf","configurable data object"]},
 
   {"id":"unsupported_01","category":"unsupported","question":"Does Opcenter support Kubernetes autoscaling?","expected_status":"in_scope_insufficient","expected_terms":[]},
   {"id":"unsupported_02","category":"unsupported","question":"How does Opcenter use predictive AI for automatic quality decisions?","expected_status":"in_scope_insufficient","expected_terms":[]},

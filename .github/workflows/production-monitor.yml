@@ -1,0 +1,65 @@
+name: Production trace monitor
+
+on:
+  schedule:
+    - cron: "15 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  inspect-production-traces:
+    runs-on: ubuntu-latest
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_WORKSPACE_ID: ${{ secrets.LANGSMITH_WORKSPACE_ID }}
+      LANGSMITH_ENDPOINT: ${{ vars.LANGSMITH_ENDPOINT || 'https://api.smith.langchain.com' }}
+      LANGSMITH_PRODUCTION_PROJECT: ${{ vars.LANGSMITH_PRODUCTION_PROJECT || 'opcenter-rag-production' }}
+      MONITOR_LOOKBACK_MINUTES: ${{ vars.MONITOR_LOOKBACK_MINUTES || '1440' }}
+      MONITOR_MAX_ERROR_RATE: ${{ vars.MONITOR_MAX_ERROR_RATE || '0.05' }}
+      MONITOR_MAX_P95_LATENCY: ${{ vars.MONITOR_MAX_P95_LATENCY || '30' }}
+      MONITOR_MIN_FEEDBACK_SCORE: ${{ vars.MONITOR_MIN_FEEDBACK_SCORE || '0.5' }}
+      MONITOR_MAX_AVERAGE_COST_USD: ${{ vars.MONITOR_MAX_AVERAGE_COST_USD || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install LangSmith client
+        run: python -m pip install langsmith==0.10.15
+      - name: Inspect recent root traces
+        id: monitor
+        run: |
+          set +e
+          python production_monitor.py
+          status=$?
+          set -e
+          if [[ "$status" != "0" && "$status" != "2" ]]; then
+            exit "$status"
+          fi
+          echo "issue_found=$([[ "$status" == "2" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Create or update production review issue
+        if: steps.monitor.outputs.issue_found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create production-observation --color D93F0B --description "Automated production RAG observation" --force
+          gh label create golden-approved --color 0E8A16 --description "Human approved for the golden dataset" --force
+          existing="$(gh issue list --state open --label production-observation --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body-file production_issue.md
+          else
+            gh issue create --title "Production RAG issue requires human review" --label production-observation --body-file production_issue.md
+          fi
+      - name: Upload monitoring report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-monitor-${{ github.run_id }}
+          path: |
+            production_monitor_report.json
+            production_issue.md
+          if-no-files-found: warn
+          retention-days: 30

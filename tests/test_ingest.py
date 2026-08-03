@@ -626,6 +626,7 @@ def test_unchanged_hash_reuses_both_levels(
 
     monkeypatch.setattr(ingest, "_file_hash", lambda path: "same")
     monkeypatch.setattr(ingest, "_ingest_pdf", fake_ingest)
+    monkeypatch.setattr(ingest, "_extract_manual_figures", lambda paths, config: 0)
     monkeypatch.setattr(ingest, "build_indexes", lambda segments, config: 1)
     monkeypatch.setattr(ingest, "validate_indexes", lambda config: 1)
 

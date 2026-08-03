@@ -1,0 +1,109 @@
+name: RAG evaluation gate
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "config/**"
+      - "src/**"
+      - "evaluation.py"
+      - "tests/evaluation_questions.json"
+      - "tests/test_evaluation_gate.py"
+      - "requirements-backend.txt"
+      - "docker-compose.yml"
+      - ".github/workflows/evaluation-gate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "config/**"
+      - "src/**"
+      - "evaluation.py"
+      - "tests/evaluation_questions.json"
+      - "tests/test_evaluation_gate.py"
+      - "requirements-backend.txt"
+      - "docker-compose.yml"
+      - ".github/workflows/evaluation-gate.yml"
+  schedule:
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: Candidate/staging backend URL; never use the production URL
+        required: false
+        type: string
+      full_dataset:
+        description: Run all golden cases
+        required: true
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      backend_url:
+        description: URL of the branch-specific candidate backend
+        required: true
+        type: string
+      full_dataset:
+        description: Run all golden cases instead of the representative PR subset
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      GROQ_API_KEY:
+        required: true
+      EVALUATION_API_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  evaluation-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate the gate and golden dataset
+        run: |
+          python -m py_compile evaluation.py backend/routes/chat.py src/config.py
+          python -m unittest tests.test_evaluation_gate
+          python -m json.tool tests/evaluation_questions.json >/dev/null
+
+  candidate-rag-evaluation:
+    if: inputs.backend_url != '' || (github.event_name == 'schedule' && vars.STAGING_RAG_BACKEND_URL != '') || github.event_name == 'workflow_dispatch'
+    needs: evaluation-contract
+    runs-on: ubuntu-latest
+    env:
+      BACKEND_URL: ${{ inputs.backend_url || vars.STAGING_RAG_BACKEND_URL }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      EVALUATION_API_TOKEN: ${{ secrets.EVALUATION_API_TOKEN }}
+      EVALUATION_CASE_IDS: ${{ inputs.backend_url != '' && inputs.full_dataset == false && 'direct_01,indirect_01,follow_01,procedure_01,table_01,comparison_01,unsupported_01,irrelevant_01,electronics_01,discrete_01' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require an evaluation backend
+        run: |
+          test -n "$BACKEND_URL"
+          test -n "$GROQ_API_KEY"
+          test -n "$EVALUATION_API_TOKEN"
+      - name: Install the judge client
+        run: python -m pip install "groq>=0.30,<1"
+      - name: Run the candidate quality gate
+        run: |
+          baseline_args=()
+          if [[ -z "$EVALUATION_CASE_IDS" && -f evaluation_results/accepted-baseline.json ]]; then
+            baseline_args=(--baseline evaluation_results/accepted-baseline.json)
+          fi
+          python evaluation.py --backend-url "$BACKEND_URL" --case-ids "$EVALUATION_CASE_IDS" --llm-judge --gate "${baseline_args[@]}"
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-evaluation-${{ github.run_id }}
+          path: evaluation_results/
+          if-no-files-found: warn
+          retention-days: 30
