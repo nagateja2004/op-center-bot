@@ -225,16 +225,16 @@ APP_PORT=8502 docker compose up -d
 
 ## Services
 
-| Service | Purpose | Host port |
-| --- | --- | --- |
-| `frontend` | Streamlit chat UI | `127.0.0.1:8501` |
-| `backend` | FastAPI and LangGraph, two replicas | Internal `8000` |
-| `postgres` | LangGraph conversation checkpoints | Internal `5432` |
-| `redis` | Limits, queues, cache, status, ownership | Internal `6379` |
-| `chroma` | Vector database server | Internal `8000` |
-| `ingest` | Explicit offline ingestion profile | None |
-| `evaluate` | Evaluation profile | None |
-| `load-test` | Bounded concurrency test profile | None |
+| Service | Purpose | Profile | Host access |
+| --- | --- | --- | --- |
+| `frontend` | Streamlit chat UI | Default | `127.0.0.1:8501` (configurable) |
+| `backend` | FastAPI and compiled LangGraph RAG, two replicas | Default | Docker network only, port `8000` |
+| `postgres` | Short-term conversation checkpoints | Default | Docker network only, port `5432` |
+| `redis` | Request queue, cache, rate limits, status and ownership | Default | Docker network only, port `6379` |
+| `chroma` | Dense-vector storage and retrieval | Default | Docker network only, port `8000` |
+| `ingest` | Offline PyMuPDF, Tesseract and PP-StructureV3 ingestion | `tools` | None; one-shot job |
+| `evaluate` | 50-case deterministic evaluation and optional LLM judge | `tools` | None; one-shot job |
+| `load-test` | Bounded concurrent SSE and latency test | `tools` | None; one-shot job |
 
 PostgreSQL and Chroma use persistent named volumes. Manuals and index metadata
 are bind-mounted from the repository and are not copied into container images.
