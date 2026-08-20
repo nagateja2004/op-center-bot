@@ -26,18 +26,21 @@ app.include_router(chat_router)
 async def request_safety(request: Request, call_next):
     started = perf_counter()
     request.state.request_id = str(uuid4())
+    raw_content_length = request.headers.get("content-length")
     try:
-        content_length = int(request.headers.get("content-length", "0") or 0)
+        content_length = int(raw_content_length) if raw_content_length else None
     except ValueError:
-        content_length = settings.max_request_bytes + 1
-    if request.method == "POST" and content_length > settings.max_request_bytes:
-        response = JSONResponse(status_code=413, content={"detail": "Request is too large."})
+        content_length = -1
+    if request.method == "POST" and content_length is None:
+        response = JSONResponse(
+            status_code=411, content={"detail": "Content-Length is required."}
+        )
+    elif request.method == "POST" and not 0 <= content_length <= settings.max_request_bytes:
+        response = JSONResponse(
+            status_code=413, content={"detail": "Request is too large."}
+        )
     else:
-        body = await request.body() if request.method == "POST" else b""
-        if len(body) > settings.max_request_bytes:
-            response = JSONResponse(status_code=413, content={"detail": "Request is too large."})
-        else:
-            response = await call_next(request)
+        response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
     route = getattr(request.scope.get("route"), "path", request.url.path)
     increment(

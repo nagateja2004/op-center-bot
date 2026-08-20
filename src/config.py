@@ -82,10 +82,31 @@ class Settings:
     chroma_collection: str = field(default_factory=lambda: os.getenv("CHROMA_COLLECTION", "opcenter_manuals").strip())
     sqlite_path: Path = field(default_factory=lambda: _env_path("CHAT_MEMORY_PATH", ROOT_DIR / "data" / "chat_memory.sqlite"))
     document_parser: str = field(default_factory=lambda: os.getenv("DOCUMENT_PARSER", "pymupdf").strip())
+    ocr_enabled: bool = field(default_factory=lambda: _env_bool("OCR_ENABLED", True))
+    ocr_language: str = field(
+        default_factory=lambda: os.getenv("OCR_LANGUAGE", "eng").strip() or "eng"
+    )
+    ocr_dpi: int = field(default_factory=lambda: _env_int("OCR_DPI", 300))
+    ocr_min_native_chars: int = field(
+        default_factory=lambda: _env_int("OCR_MIN_NATIVE_CHARS", 40)
+    )
+    tessdata_prefix: str = field(
+        default_factory=lambda: os.getenv("TESSDATA_PREFIX", "").strip()
+    )
+    paddle_ocr_enabled: bool = field(
+        default_factory=lambda: _env_bool("PADDLE_OCR_ENABLED", True)
+    )
+    paddle_ocr_device: str = field(
+        default_factory=lambda: os.getenv("PADDLE_OCR_DEVICE", "cpu").strip() or "cpu"
+    )
     embedding_device: str = field(default_factory=lambda: os.getenv("EMBEDDING_DEVICE", "cpu").strip() or "cpu")
     embedding_model: str = field(
         default_factory=lambda: os.getenv("EMBEDDING_MODEL", "").strip()
         or "sentence-transformers/all-MiniLM-L6-v2"
+    )
+    embedding_model_revision: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL_REVISION", "").strip()
+        or "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
     )
     embedding_safety_limit: int = field(
         default_factory=lambda: _env_int("EMBEDDING_SAFETY_LIMIT", 512)
@@ -93,6 +114,10 @@ class Settings:
     reranker_model: str = field(
         default_factory=lambda: os.getenv("RERANKER_MODEL", "").strip()
         or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    reranker_model_revision: str = field(
+        default_factory=lambda: os.getenv("RERANKER_MODEL_REVISION", "").strip()
+        or "c5ee24cb16019beea0893ab7796b1df96625c6b8"
     )
     inference_max_concurrency: int = field(
         default_factory=lambda: _env_int("INFERENCE_MAX_CONCURRENCY", 4)
@@ -124,10 +149,6 @@ class Settings:
     diagram_input_token_budget: int = field(
         default_factory=lambda: _env_int("GROQ_DIAGRAM_INPUT_TOKEN_BUDGET", 1_600)
     )
-
-    @property
-    def bm25_path(self) -> Path:
-        return _env_path("BM25_INDEX_PATH", self.indexes_dir / "bm25.pkl")
 
     @property
     def evidence_units_path(self) -> Path:
@@ -210,6 +231,14 @@ class Settings:
             raise EnvironmentError("CHROMA_HOST is required when CHROMA_MODE=server.")
         if not self.chroma_collection:
             raise EnvironmentError("CHROMA_COLLECTION is required.")
+        if self.ocr_dpi <= 0 or self.ocr_min_native_chars < 0:
+            raise ValueError("OCR_DPI must be positive and OCR_MIN_NATIVE_CHARS cannot be negative.")
+        if any(
+            len(revision) != 40
+            or any(character not in "0123456789abcdef" for character in revision.casefold())
+            for revision in (self.embedding_model_revision, self.reranker_model_revision)
+        ):
+            raise EnvironmentError("Hugging Face model revisions must be full commit SHAs.")
         if min(
             self.groq_model_max_concurrency,
             self.groq_model_requests_per_minute,

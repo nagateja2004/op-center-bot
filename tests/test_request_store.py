@@ -17,6 +17,9 @@ class FakeRedis:
     async def set(self, key, value, ex=None):
         self.values[key] = value
 
+    async def get(self, key):
+        return self.values.get(key)
+
     async def getdel(self, key):
         return self.values.pop(key, None)
 
@@ -28,6 +31,7 @@ def test_request_store_is_single_use_and_enforces_thread_owner() -> None:
         assert await store.claim_thread("thread", "session-a")
         assert not await store.claim_thread("thread", "session-b")
         await store.save_request("request", '{"message":"hello"}')
+        assert await store.get_request("request") == '{"message":"hello"}'
         assert await store.pop_request("request") == '{"message":"hello"}'
         assert await store.pop_request("request") is None
 

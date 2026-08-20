@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import httpx
 
+from src.http_safety import validated_backend_url
+
 
 def percentile(values: list[float], fraction: float) -> float:
     ordered = sorted(values)
@@ -31,8 +33,13 @@ async def one_request(client: httpx.AsyncClient, backend_url: str, number: int) 
     if accepted.status_code != 202:
         return {"status": f"http_{accepted.status_code}", "latency": perf_counter() - started}
     request_id = accepted.json()["request_id"]
+    session_id = accepted.json()["session_id"]
     event = "message"
-    async with client.stream("GET", f"{backend_url}/v1/chat/{request_id}/stream") as response:
+    async with client.stream(
+        "GET",
+        f"{backend_url}/v1/chat/{request_id}/stream",
+        headers={"X-Session-ID": session_id},
+    ) as response:
         async for line in response.aiter_lines():
             if line.startswith("event:"):
                 event = line[6:].strip()
@@ -72,7 +79,7 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.users <= 500:
         raise SystemExit("--users must be between 1 and 500")
-    asyncio.run(run(args.backend_url.rstrip("/"), args.users))
+    asyncio.run(run(validated_backend_url(args.backend_url), args.users))
 
 
 if __name__ == "__main__":

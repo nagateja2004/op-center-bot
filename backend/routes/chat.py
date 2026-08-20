@@ -233,15 +233,20 @@ async def stream_chat(
     graph=Depends(get_graph),
 ) -> StreamingResponse:
     store = getattr(request.app.state, "request_store", None)
-    raw_payload = await store.pop_request(request_id) if store is not None else None
+    raw_payload = await store.get_request(request_id) if store is not None else None
     if raw_payload is None:
         raise HTTPException(status_code=404, detail="Unknown or already streamed request")
     payload = ChatRequest.model_validate_json(raw_payload)
+    supplied_session = request.headers.get("X-Session-ID", "")
+    if not secrets.compare_digest(supplied_session, str(payload.session_id)):
+        raise HTTPException(status_code=403, detail="Request is not available in this session.")
     if payload.include_evaluation_context:
         supplied_token = request.headers.get("X-Evaluation-Token", "")
         expected_token = settings.evaluation_api_token
         if not expected_token or not secrets.compare_digest(supplied_token, expected_token):
             raise HTTPException(status_code=403, detail="Evaluation context is not available.")
+    if await store.pop_request(request_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown or already streamed request")
 
     async def events():
         graph_started = time.perf_counter()

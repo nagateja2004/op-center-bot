@@ -34,7 +34,11 @@ def create_embedding_model(
     """Return normalized local Hugging Face embeddings."""
     return _embedding_class()(
         model_name=config.embedding_model,
-        model_kwargs={"device": device or config.embedding_device},
+        model_kwargs={
+            "device": device or config.embedding_device,
+            "revision": config.embedding_model_revision,
+            "trust_remote_code": False,
+        },
         encode_kwargs={"normalize_embeddings": True},
     )
 
@@ -54,7 +58,14 @@ def create_reranker(
     from sentence_transformers import CrossEncoder
 
     selected_device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
-    model = CrossEncoder(config.reranker_model, device=selected_device)
+    model = CrossEncoder(
+        config.reranker_model,
+        device=selected_device,
+        revision=config.reranker_model_revision,
+        trust_remote_code=False,
+    )
+    if selected_device == "cpu":
+        materialize_cpu_parameters(model.model)
     finite_scores(
         model.predict(
             [("Opcenter evidence", "Opcenter manual evidence")],
@@ -63,6 +74,20 @@ def create_reranker(
         1,
     )
     return model
+
+
+def materialize_cpu_parameters(model: Any) -> None:
+    """Copy loaded weights into owned CPU memory before matrix multiplication.
+
+    Some macOS/PyTorch combinations can produce non-finite CPU matmul output
+    from safetensors-backed parameter storage even though the weights are
+    finite. An owned clone avoids that unsafe storage path.
+    """
+    import torch
+
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.data = parameter.data.clone()
 
 
 def finite_scores(values: Any, expected: int) -> list[float]:

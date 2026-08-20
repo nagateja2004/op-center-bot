@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from typing import cast
 
 from groq import APITimeoutError
@@ -284,14 +285,80 @@ def test_compose_model_aliases_are_supported(monkeypatch) -> None:
     assert policy.fallback_model == "verify-fallback"
 
 
+def test_example_environment_uses_qwen_for_answer_fallback_and_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {}
+    for raw_line in Path(".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    for key, value in values.items():
+        if key.startswith("GROQ_") and "MODEL" in key:
+            monkeypatch.setenv(key, value)
+
+    assert role_config("planner").primary_model == "openai/gpt-oss-20b"
+    assert role_config("planner").fallback_model == "openai/gpt-oss-120b"
+    assert role_config("query_broadening").primary_model == "openai/gpt-oss-20b"
+    assert role_config("query_broadening").fallback_model == ""
+    assert role_config("grader").primary_model == "openai/gpt-oss-20b"
+    assert role_config("grader").fallback_model == "openai/gpt-oss-120b"
+    assert role_config("answer").fallback_model == "qwen/qwen3.6-27b"
+    assert role_config("verifier").primary_model == "qwen/qwen3.6-27b"
+    assert role_config("diagram").primary_model == "openai/gpt-oss-20b"
+    assert values["GROQ_JUDGE_MODEL"] == "openai/gpt-oss-20b"
+
+
+def test_builtin_role_defaults_do_not_reference_retired_groq_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for role in (
+        "PLANNER",
+        "QUERY_BROADENING",
+        "GRADER",
+        "ANSWER",
+        "VERIFIER",
+        "DIAGRAM",
+    ):
+        monkeypatch.delenv(f"GROQ_{role}_PRIMARY_MODEL", raising=False)
+        monkeypatch.delenv(f"GROQ_{role}_FALLBACK_MODEL", raising=False)
+    for alias in (
+        "GROQ_PLANNER_MODEL",
+        "GROQ_QUERY_MODEL",
+        "GROQ_GRADER_MODEL",
+        "GROQ_ANSWER_MODEL",
+        "GROQ_VERIFY_MODEL",
+        "GROQ_VERIFY_FALLBACK_MODEL",
+        "GROQ_DIAGRAM_MODEL",
+    ):
+        monkeypatch.delenv(alias, raising=False)
+
+    retired = {
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+    }
+    for role in (
+        "planner",
+        "query_broadening",
+        "grader",
+        "answer",
+        "verifier",
+        "diagram",
+    ):
+        policy = role_config(cast(GroqRole, role))
+        assert policy.primary_model not in retired
+        assert policy.fallback_model not in retired
+
+
 def test_index_artifact_paths_follow_the_configured_index_directory(
     monkeypatch, tmp_path
 ) -> None:
-    for name in ("BM25_INDEX_PATH", "EVIDENCE_UNITS_PATH", "RETRIEVAL_SEGMENTS_PATH"):
+    for name in ("EVIDENCE_UNITS_PATH", "RETRIEVAL_SEGMENTS_PATH"):
         monkeypatch.delenv(name, raising=False)
     config = Settings(groq_api_key="test", indexes_dir=tmp_path)
 
-    assert config.bm25_path == tmp_path / "bm25.pkl"
     assert config.evidence_units_path == tmp_path / "evidence_units.json"
     assert config.retrieval_segments_path == tmp_path / "retrieval_segments.json"
 
@@ -307,7 +374,11 @@ def test_embeddings_are_local_and_normalized(monkeypatch: pytest.MonkeyPatch) ->
     embeddings.create_embedding_model.cache_clear()
     embeddings.create_embedding_model(Settings(groq_api_key=""))
 
-    assert captured["model_kwargs"] == {"device": "cpu"}
+    assert captured["model_kwargs"] == {
+        "device": "cpu",
+        "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+        "trust_remote_code": False,
+    }
     assert captured["encode_kwargs"] == {"normalize_embeddings": True}
     embeddings.create_embedding_model.cache_clear()
 
@@ -320,6 +391,18 @@ def test_cross_encoder_scores_are_scalar_and_finite() -> None:
     assert embeddings.finite_scores([Scalar(), -0.5], 2) == [0.25, -0.5]
     with pytest.raises(ValueError, match="invalid scores"):
         embeddings.finite_scores([float("nan")], 1)
+
+
+def test_cpu_model_parameters_are_materialized_in_owned_memory() -> None:
+    torch = pytest.importorskip("torch")
+    model = torch.nn.Linear(2, 1)
+    original_weight = model.weight.detach().clone()
+    original_pointer = model.weight.data_ptr()
+
+    embeddings.materialize_cpu_parameters(model)
+
+    assert model.weight.data_ptr() != original_pointer
+    assert torch.equal(model.weight, original_weight)
 
 
 def test_expensive_clients_have_single_entry_caches() -> None:

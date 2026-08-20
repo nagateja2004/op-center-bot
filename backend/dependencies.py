@@ -68,7 +68,6 @@ def validate_search_indexes(chroma_client) -> int:
     required = (
         settings.evidence_units_path,
         settings.retrieval_segments_path,
-        settings.bm25_path,
         settings.indexes_dir / "manifest.json",
     )
     if settings.chroma_mode == "local":

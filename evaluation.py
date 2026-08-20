@@ -15,6 +15,8 @@ from typing import Any
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from src.http_safety import validated_backend_url
+
 
 ROOT_DIR = Path(__file__).parent
 QUESTIONS_PATH = ROOT_DIR / "tests" / "evaluation_questions.json"
@@ -49,7 +51,8 @@ def api_request(
     request_headers = dict(headers or {})
     if body:
         request_headers["Content-Type"] = "application/json"
-    return urlopen(Request(
+    # Evaluation entrypoints validate the backend origin before invoking requests.
+    return urlopen(Request(  # nosec B310
         url,
         data=body,
         headers=request_headers,
@@ -74,13 +77,14 @@ def invoke(
             "conversation_id": conversation["conversation_id"],
             "thread_id": conversation["thread_id"],
         })
-    headers = {"X-Evaluation-Token": evaluation_token} if evaluation_token else None
+    headers = {"X-Evaluation-Token": evaluation_token} if evaluation_token else {}
     with api_request(f"{backend_url}/v1/chat", payload, headers) as response:
         accepted = json.load(response)
     conversation.update({
         "conversation_id": accepted["conversation_id"],
         "thread_id": accepted["thread_id"],
     })
+    headers["X-Session-ID"] = accepted["session_id"]
     event, data = "message", []
     with api_request(
         f"{backend_url}/v1/chat/{accepted['request_id']}/stream",
@@ -456,7 +460,7 @@ def main() -> None:
     parser.add_argument("--llm-judge", action="store_true", help="Score semantic quality with a separate Groq model")
     parser.add_argument(
         "--judge-model",
-        default=os.getenv("GROQ_JUDGE_MODEL", "llama-3.1-8b-instant"),
+        default=os.getenv("GROQ_JUDGE_MODEL", "openai/gpt-oss-20b"),
     )
     parser.add_argument("--min-pass-rate", type=float, default=DEFAULT_THRESHOLDS["pass_rate"])
     parser.add_argument("--min-answer-term-accuracy", type=float, default=DEFAULT_THRESHOLDS["answer_term_accuracy"])
@@ -470,6 +474,7 @@ def main() -> None:
     parser.add_argument("--max-judge-errors", type=int, default=DEFAULT_THRESHOLDS["judge_errors"])
     parser.add_argument("--max-regression", type=float, default=0.03)
     args = parser.parse_args()
+    args.backend_url = validated_backend_url(args.backend_url)
     percentage_thresholds = (
         args.min_pass_rate,
         args.min_answer_term_accuracy,
@@ -528,11 +533,11 @@ def main() -> None:
         conversation = {"session_id": str(uuid4())}
         try:
             if case.get("context_question"):
-                invoke(case["context_question"], args.backend_url.rstrip("/"), conversation)
+                invoke(case["context_question"], args.backend_url, conversation)
             started = perf_counter()
             result = invoke(
                 case["question"],
-                args.backend_url.rstrip("/"),
+                args.backend_url,
                 conversation,
                 evaluation_token=evaluation_token if args.llm_judge else "",
             )

@@ -1,5 +1,6 @@
 .env
 .env.*
+!.env.example
 venv/
 .venv/
 env/
@@ -17,6 +18,8 @@ __pycache__/
 htmlcov/
 evaluation_results/*
 !evaluation_results/accepted-baseline.json
+!evaluation_results/retrieval-benchmark-latest.json
+!evaluation_results/retrieval-benchmark-latest.html
 production_monitor_report.json
 production_issue.md
 .cache/

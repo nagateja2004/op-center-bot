@@ -31,9 +31,10 @@ flowchart TB
 
     subgraph RAG["RAG and model layer"]
         Graph --> Retrieval["Hybrid retrieval<br/>Chroma + BM25 + weighted RRF"]
-        Retrieval --> Context["EvidenceUnit resolution<br/>neighbor expansion · deterministic compression"]
-        Context --> Reranker["Local cross-encoder reranker"]
-        Reranker -->|"ranked evidence"| Graph
+        Retrieval --> Expansion["Neighbor-segment context expansion"]
+        Expansion --> Reranker["Local cross-encoder reranker"]
+        Reranker --> Context["EvidenceUnit resolution<br/>deterministic compression"]
+        Context -->|"ranked evidence"| Graph
         Graph --> Groq["Role-specific Groq LLMs<br/>planner · grader · answer · verifier · diagram"]
         Groq <--> Limits[("Redis per-model admission control")]
     end
@@ -42,7 +43,7 @@ flowchart TB
         PDFs["Opcenter PDF manuals"] --> Ingest["Explicit ingestion job"]
         Ingest --> Units[("EvidenceUnits and retrieval segments")]
         Units --> Vectors[("Chroma vectors")]
-        Units --> Lexical[("BM25 index")]
+        Units --> Lexical[("BM25 runtime index")]
         Ingest --> Figures[("Extracted manual figures")]
         Vectors --> Retrieval
         Lexical --> Retrieval
@@ -55,9 +56,7 @@ flowchart TB
         Golden["50-case golden dataset"] --> Evaluator["Deterministic checks + LLM judge"]
         Evaluator -->|"evaluation questions"| API
         API -->|"answers + bounded evidence"| Evaluator
-        Evaluator --> Gate{"CI quality gate"}
-        Gate -->|"pass"| Release["Release candidate"]
-        Gate -->|"fail"| Diagnose["HTML report + LangSmith trace"]
+        Evaluator --> Reports["JSON + HTML evaluation reports"]
     end
 ```
 
@@ -67,11 +66,11 @@ flowchart TB
 | API | FastAPI | Request validation, replica-safe request acceptance, SSE, health and readiness |
 | Orchestration | LangGraph | Conditional RAG flow, bounded retry, checkpoints and node-level tracing |
 | Retrieval | Chroma, BM25 and weighted RRF | Semantic and lexical candidate retrieval |
-| Evidence processing | EvidenceUnits, neighbor expansion and cross-encoder | Restore complete source context, compress deterministically and rerank |
+| Evidence processing | PyMuPDF, Tesseract, PP-StructureV3, EvidenceUnits and cross-encoder | Extract native or scanned content, preserve structure, compress deterministically and rerank |
 | Generation | Role-specific Groq models | Planning, grading, grounded answering, verification and optional diagrams |
 | State | PostgreSQL and Redis | Short-term conversation checkpoints, request handoff, ownership, caches and limits |
 | Observability | LangSmith and built-in endpoints | Traces, latency, errors, queue depth, token and cost inspection |
-| Quality | Golden dataset and GitHub Actions | Deterministic metrics, LLM-as-a-judge and regression gates |
+| Quality | Golden dataset and local evaluator | Deterministic metrics, optional LLM-as-a-judge and JSON/HTML reports |
 
 Important design boundaries:
 
@@ -87,6 +86,7 @@ Important design boundaries:
 - Direct definitions, procedures, comparisons, troubleshooting, and follow-ups
 - Multi-aspect retrieval with independent evidence coverage
 - Relationship-aware retrieval for hierarchy and parent-child questions
+- Selective OCR for scanned pages with PP-StructureV3 fallback for complex layouts and tables
 - Original diagrams extracted from cited manual pages
 - Generated hierarchy, relationship, process, decision, and architecture diagrams
 - Basic greetings without unnecessary retrieval or Groq calls
@@ -96,7 +96,7 @@ Important design boundaries:
 - Built-in latency, inference, and queue metrics without a monitoring service dependency
 - Optional LangSmith traces for the complete LangGraph request path
 - A 50-case golden dataset with JSON and visual HTML evaluation reports
-- CI quality gates with fixed thresholds and accepted-baseline regression checks
+- Optional local threshold and accepted-baseline regression checks
 
 ## Requirements
 
@@ -115,7 +115,7 @@ From the repository root:
 ```bash
 git clone https://github.com/nagateja2004/op-center-bot.git
 cd op-center-bot
-touch .env
+cp .env.example .env
 chmod 600 .env
 ```
 
@@ -138,18 +138,16 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 Tracing is optional. Leave `LANGSMITH_TRACING` unset or set it to `false` when
 manual content must not leave the deployment environment.
 
-For a candidate/staging deployment that will be scored by the semantic
-evaluator, also add a long random secret:
+For manual semantic evaluation, also add a long random secret:
 
 ```dotenv
-EVALUATION_API_TOKEN=replace_with_a_long_random_staging_secret
-GROQ_JUDGE_MODEL=llama-3.1-8b-instant
+EVALUATION_API_TOKEN=replace_with_a_long_random_evaluation_secret
+GROQ_JUDGE_MODEL=openai/gpt-oss-20b
 ```
 
-Use the same `EVALUATION_API_TOKEN` as a GitHub Actions repository secret. It
+Use the same `EVALUATION_API_TOKEN` in the backend and the local evaluator. It
 protects the bounded evidence excerpts used by the judge. Normal chat requests
-cannot request or receive those excerpts. Do not enable this evaluation route
-on the current production deployment.
+cannot request or receive those excerpts. Do not expose this token publicly.
 
 Place the PDF manuals directly in `manuals/`. Subdirectories are not scanned.
 
@@ -229,17 +227,20 @@ APP_PORT=8502 docker compose up -d
 
 | Service | Purpose | Host port |
 | --- | --- | --- |
-| `frontend` | Streamlit chat UI | `8501` |
+| `frontend` | Streamlit chat UI | `127.0.0.1:8501` |
 | `backend` | FastAPI and LangGraph, two replicas | Internal `8000` |
-| `postgres` | LangGraph conversation checkpoints | `5432` |
+| `postgres` | LangGraph conversation checkpoints | Internal `5432` |
 | `redis` | Limits, queues, cache, status, ownership | Internal `6379` |
-| `chroma` | Vector database server | `8001` |
+| `chroma` | Vector database server | Internal `8000` |
 | `ingest` | Explicit offline ingestion profile | None |
 | `evaluate` | Evaluation profile | None |
 | `load-test` | Bounded concurrency test profile | None |
 
 PostgreSQL and Chroma use persistent named volumes. Manuals and index metadata
 are bind-mounted from the repository and are not copied into container images.
+The frontend binds to loopback by default. Put an authenticated, TLS-enabled
+reverse proxy with client rate limits in front of it for public access; do not
+publish PostgreSQL, Redis, Chroma, or the backend directly.
 
 ## Environment variables
 
@@ -248,13 +249,15 @@ are bind-mounted from the repository and are not copied into container images.
 | Variable | Purpose |
 | --- | --- |
 | `GROQ_API_KEY` | Groq API key; must begin with `gsk_` |
+| `POSTGRES_PASSWORD` | Strong PostgreSQL password required by Docker Compose |
 | `DATABASE_URL` | PostgreSQL checkpoint URL when running the backend outside Compose |
 | `REDIS_URL` | Redis URL when running the backend outside Compose |
 | `CHROMA_HOST` | Chroma host when `CHROMA_MODE=server` outside Compose |
 
 Docker Compose supplies `DATABASE_URL`, `REDIS_URL`, `CHROMA_HOST`, and
-`CHROMA_PORT` to the backend. Only the Groq key is required in `.env` for the
-default local Compose deployment.
+`CHROMA_PORT` to the backend. `GROQ_API_KEY` and `POSTGRES_PASSWORD` are
+required in `.env` for the default local Compose deployment. PostgreSQL and
+Chroma are private Docker services and are not published on host ports.
 
 ### Storage and services
 
@@ -267,7 +270,6 @@ default local Compose deployment.
 | `CHROMA_COLLECTION` | `opcenter_manuals` | Main vector collection |
 | `MANUALS_DIRECTORY` | `manuals` | PDF manual directory |
 | `INDEXES_DIRECTORY` | `indexes` | Local index metadata directory |
-| `BM25_INDEX_PATH` | `indexes/bm25.pkl` | BM25 index |
 | `EVIDENCE_UNITS_PATH` | `indexes/evidence_units.json` | EvidenceUnit store |
 | `RETRIEVAL_SEGMENTS_PATH` | `indexes/retrieval_segments.json` | Retrieval segments |
 | `CHAT_MEMORY_PATH` | `data/chat_memory.sqlite` | SQLite path in local SQLite mode |
@@ -277,12 +279,14 @@ default local Compose deployment.
 | Variable | Default |
 | --- | --- |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` |
+| `EMBEDDING_MODEL_REVISION` | Pinned trusted model commit |
 | `EMBEDDING_DEVICE` | `cpu` |
 | `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| `RERANKER_MODEL_REVISION` | Pinned trusted model commit |
 | `INFERENCE_MAX_CONCURRENCY` | `4` |
 | `INFERENCE_MAX_QUEUE_DEPTH` | `32` |
 | `GROQ_REQUEST_TIMEOUT` | `90` seconds |
-| `GROQ_JUDGE_MODEL` | `llama-3.1-8b-instant` (evaluation process only) |
+| `GROQ_JUDGE_MODEL` | `openai/gpt-oss-20b` (evaluation process only) |
 
 Each Groq role has a primary model and at most one fallback. Override a role
 with:
@@ -293,6 +297,22 @@ GROQ_ANSWER_FALLBACK_MODEL=qwen/qwen3.6-27b
 GROQ_ANSWER_TIMEOUT=90
 GROQ_ANSWER_MAX_OUTPUT_TOKENS=4096
 ```
+
+The supported default role assignment is:
+
+| Role | Primary | Fallback |
+| --- | --- | --- |
+| Planner | `openai/gpt-oss-20b` | `openai/gpt-oss-120b` |
+| Query broadening | `openai/gpt-oss-20b` | None |
+| Evidence grader | `openai/gpt-oss-20b` | `openai/gpt-oss-120b` |
+| Answer generation | `openai/gpt-oss-120b` | `qwen/qwen3.6-27b` |
+| Answer verifier | `qwen/qwen3.6-27b` | `openai/gpt-oss-20b` |
+| Diagram generation | `openai/gpt-oss-20b` | `openai/gpt-oss-120b` |
+
+Docker Compose passes these model IDs explicitly to the backend, while local
+development reads the same values from `.env`. The retired
+`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, and
+`meta-llama/llama-4-scout-17b-16e-instruct` IDs are not used.
 
 Supported role prefixes are `PLANNER`, `QUERY_BROADENING`, `GRADER`, `ANSWER`,
 `VERIFIER`, and `DIAGRAM`.
@@ -354,7 +374,37 @@ index schema changes:
 docker compose --profile tools run --rm ingest
 ```
 
-The current index schema is version 8. Ingestion creates:
+### Document ingestion and hybrid retrieval
+
+```mermaid
+flowchart TD
+    PDF["PDF manuals"] --> Detect{"Page/content analysis"}
+    Detect -->|"sufficient selectable text"| Native["PyMuPDF native extraction"]
+    Detect -->|"scanned or insufficient text"| Tesseract["PyMuPDF + Tesseract OCR"]
+    Tesseract --> Layout{"OCR result usable and simple?"}
+    Layout -->|"yes"| Normalize["Normalize text, headings, tables and source metadata"]
+    Layout -->|"no · weak, tabular or multi-column"| Paddle["PaddleOCR PP-StructureV3"]
+    Native --> Normalize
+    Paddle --> Normalize
+
+    Normalize --> Evidence["EvidenceUnits<br/>text · procedures · structured tables · citations"]
+    Evidence --> Segments["RetrievalSegments + deterministic search representations"]
+    Segments --> Dense[("Chroma dense vectors")]
+    Segments --> Sparse[("In-memory BM25 sparse index")]
+
+    Query["Question planned by LangGraph"] --> Dense
+    Query --> Sparse
+    Dense --> RRF["Weighted reciprocal-rank fusion"]
+    Sparse --> RRF
+    RRF --> Expand["Neighbor-segment context expansion"]
+    Expand --> Rerank["Local cross-encoder reranker"]
+    Rerank --> Resolve["Resolve complete EvidenceUnits"]
+    Resolve --> Compress["Deterministic context compression"]
+    Compress --> RAG["LangGraph grading, generation and verification"]
+    RAG --> Answer["Grounded answer with citations"]
+```
+
+The current stored index schema remains version 8. Ingestion creates:
 
 - `indexes/evidence_units.json`
 - `indexes/retrieval_segments.json`
@@ -363,17 +413,38 @@ The current index schema is version 8. Ingestion creates:
 - `indexes/concept_index.json`
 - `indexes/ingestion_audit.json`
 - `indexes/manifest.json`
-- `indexes/bm25.pkl`
 - `indexes/manual_figures.json`
 - `indexes/manual_figures/`
 - Chroma retrieval and search-representation collections
 
-PyMuPDF extracts embedded text, tables, headings, procedures, warnings, and
-usable manual figures. Scanned pages without embedded text require OCR before
-ingestion.
+Every page first uses PyMuPDF's embedded-text extraction. Pages with fewer than
+`OCR_MIN_NATIVE_CHARS` useful characters are passed to PyMuPDF's Tesseract OCR.
+When that result is still weak or appears tabular/multi-column, PP-StructureV3
+reprocesses the page and preserves structured tables. The heavy PaddleOCR
+runtime is installed only in `Dockerfile.ingest`; the live backend image remains
+unchanged. The first complex-page run downloads PP-StructureV3 models into the
+persisted `paddle_cache` volume.
+
+OCR configuration:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OCR_ENABLED` | `true` | Enable scanned-page fallback during explicit ingestion |
+| `OCR_LANGUAGE` | `eng` | Tesseract language code; combine packs with `eng+deu` |
+| `OCR_DPI` | `300` | Page-rendering resolution for OCR |
+| `OCR_MIN_NATIVE_CHARS` | `40` | Minimum useful native/OCR characters before fallback |
+| `PADDLE_OCR_ENABLED` | `true` | Enable PP-StructureV3 for weak or complex OCR pages |
+| `PADDLE_OCR_DEVICE` | `cpu` | Paddle inference device; use `gpu` only in a compatible image |
+
+`indexes/ingestion_audit.json` records native, Tesseract, Paddle Structure, and
+failed OCR page counts for every manual. Existing version-8 indexes remain
+readable during rollout, but run explicit ingestion once to rebuild unchanged
+manuals with the new OCR pipeline.
 
 Evidence IDs and retrieval metadata are preserved from ingestion through
-Chroma, BM25, reranking, citations, and returned sources.
+Chroma, in-memory BM25, reranking, citations, and returned sources. BM25 is
+rebuilt safely from `retrieval_segments.json` at backend startup; no pickle
+artifact is loaded.
 
 ## API
 
@@ -413,6 +484,7 @@ For the next message in the same conversation, send the same `session_id`,
 ```http
 GET /v1/chat/{request_id}/stream
 Accept: text/event-stream
+X-Session-ID: {session_id returned by POST /v1/chat}
 ```
 
 SSE event types:
@@ -634,175 +706,53 @@ out-of-scope routing, Execution Electronics, and Execution Discrete.
 | Execution Discrete | 5 | Product-specific manual routing |
 | **Initial total** | **50** | End-to-end RAG regression coverage; human-approved production cases can extend it |
 
-### Approved final LLMOps workflow
+### Retrieval ablation benchmark
 
-> **Deployment boundary:** Every automation in this diagram is implemented in
-> the repository. It remains inactive until the repository is published and its
-> GitHub environments, secrets, variables, and staging server are configured.
-> The currently deployed production server was not changed while building it.
+The golden questions also have exact EvidenceUnit, source-file, and PDF-page
+labels in
+[`tests/retrieval_ground_truth.json`](tests/retrieval_ground_truth.json). The
+local benchmark compares the same questions and `K=5` cutoff across two paths:
 
-```mermaid
-flowchart TD
-    Change["1. Change code, prompt, retrieval or model locally"] --> LocalTest["2. Run local tests"]
-    LocalTest --> Push["3. Commit and push a feature branch"]
-    Push --> PR["4. Create or update pull request"]
-    PR --> StagePR["5. Deploy the PR commit to staging"]
-    StagePR --> PRCases["6. Run 10 representative golden cases"]
-    PRCases --> PRRAG["7. Execute the LangGraph RAG pipeline"]
+- **Semantic-only baseline:** Chroma dense-vector retrieval
+- **Hybrid system:** Chroma + BM25 + weighted reciprocal-rank fusion + neighbor
+  context expansion + a local cross-encoder reranker
 
-    PRRAG --> PRTrace["Store staging traces in LangSmith"]
-    PRRAG --> PREval["Deterministic checks and LLM-as-a-judge"]
-    PREval --> PRGate{"8. PR CI gate passed?"}
+Run the benchmark without Groq or LangSmith calls:
 
-    PRGate -->|"No"| Diagnose["Inspect the HTML report and LangSmith trace"]
-    Diagnose --> Fix["Fix locally, commit and push again"]
-    Fix --> PR
-
-    PRGate -->|"Yes"| Merge["9. Human reviews and merges the PR"]
-    Merge --> StageMain["10. Deploy the merged commit to staging"]
-    StageMain --> FullCases["11. Run the full 50+ case dataset"]
-    FullCases --> FullEval["Deterministic checks, LLM judge and baseline comparison"]
-    FullCases --> FullTrace["Store full evaluation traces in LangSmith"]
-    FullEval --> ReleaseGate{"12. Release CI gate passed?"}
-
-    ReleaseGate -->|"No"| Diagnose
-    ReleaseGate -->|"Yes"| Production["13. Deploy the evaluated commit to production"]
-    Production --> Monitor["14. Monitor production traces daily"]
-    Monitor --> ProductionCheck{"Verified production problem found?"}
-
-    ProductionCheck -->|"No"| Monitor
-    ProductionCheck -->|"Yes"| Review["15. Human reviews the trace and manuals"]
-    Review --> NewCase["16. Add an approved case to the golden dataset"]
-    NewCase --> DatasetPR["17. Create a golden-dataset pull request"]
-    DatasetPR --> PR
+```bash
+source .venv/bin/activate
+python retrieval_benchmark.py
 ```
 
-The **PR gate** is the fast pre-merge check: it evaluates 10 cases and blocks
-the pull request when quality, latency, or error thresholds fail. The
-**release gate** runs after merge against all 50+ cases on staging and blocks
-production deployment when the full evaluation or accepted-baseline comparison
-fails. A pull request is not the `git pull` command: developers push their
-feature branch, then request that GitHub merge it into `main` after review.
+The current run scores the 44 answerable cases; the six unsupported and
+irrelevant cases are retained in the 50-case report but excluded from retrieval
+F1 because they intentionally have no relevant manual evidence.
 
-The separate judge model runs at temperature `0` and scores relevance,
-correctness, faithfulness, completeness, and clarity from 1 to 5. A case passes
-when its average is at least 4.0 and its correctness and faithfulness scores are
-both at least 4.0. The aggregate gate requires a semantic average of at least
-4.0, an 85% semantic pass rate, and zero judge errors. The callable PR workflow
-runs a 10-case subset with one case from every dataset category; manual and
-nightly runs use all 50. Treat these as starting thresholds and calibrate them
-with human-reviewed reports before making the semantic gate a required merge
-check. Baseline comparison is skipped for the subset because a 10-case report
-must not be compared with a 50-case baseline.
+| Metric at K=5 | Semantic-only | Hybrid |
+| --- | ---: | ---: |
+| Precision@5 | 11.82% | 18.64% |
+| Recall@5 | 48.86% | 73.86% |
+| Macro F1@5 | 18.72% | 29.22% |
+| Mean reciprocal rank | 39.36% | 67.12% |
+| p50 retrieval latency | 7 ms | 141 ms |
+| p95 retrieval latency | 9 ms | 175 ms |
 
-Only human-confirmed production failures may become new golden cases. A failed
-gate must lead back through a code change, PR update, fresh deployment, and new
-evaluation; it must never reuse the previously failed deployment.
+Hybrid retrieval produced a **56.07% relative macro F1@5 lift** over the
+semantic-only baseline. This is a measured local ablation result, not an
+estimated claim. See the
+[`JSON report`](evaluation_results/retrieval-benchmark-latest.json) for exact
+configuration and per-case rankings, or open the
+[`HTML dashboard`](evaluation_results/retrieval-benchmark-latest.html) for a
+visual comparison.
 
-| Capability | Status |
-| --- | --- |
-| 50-case golden dataset and deterministic evaluation | Implemented |
-| JSON/HTML reports and fixed/baseline CI thresholds | Implemented |
-| LangSmith trace configuration | Implemented and locally verified |
-| Protected retrieval evidence for evaluation | Implemented |
-| LLM-as-a-judge semantic scoring and token accounting | Implemented |
-| Callable CI gate for a candidate/staging URL | Implemented |
-| SSH deployment of each internal PR/merge commit to staging | Implemented; requires GitHub/server configuration |
-| Automatic production release after the merged commit passes all 50 cases on staging | Implemented; requires GitHub/server configuration |
-| Daily LangSmith error, latency, cost, and feedback monitoring | Implemented; requires LangSmith credentials |
-| Production observation → GitHub review issue | Implemented |
-| Human-approved issue → validated golden-dataset PR | Implemented |
+Resume-ready wording:
 
-### Activate the complete delivery pipeline
+> Built a grounded Opcenter manuals Q&A assistant with per-source citations;
+> hybrid retrieval (Chroma + BM25 + weighted RRF + cross-encoder reranking)
+> improved macro retrieval F1@5 by 56.1% over a dense-only baseline on 44
+> scored questions from a 50-case golden dataset.
 
-The workflow uses the existing Docker Compose deployment and standard SSH. The
-server must have Docker Compose, and the SSH user must be allowed to run it.
-Create separate staging and production directories before enabling the
-workflow. Each directory must already contain its own `.env`, manuals, and
-indexes. Deployment deliberately never copies or replaces those files.
-
-Use different Compose project names and LangSmith projects:
-
-```dotenv
-# Staging server .env
-COMPOSE_PROJECT_NAME=opcenter-staging
-COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml
-DEPLOYMENT_ENVIRONMENT=staging
-APP_PORT=8502
-POSTGRES_PORT=5433
-CHROMA_EXPOSE_PORT=8002
-BACKEND_EXPOSE_PORT=8003
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=replace_with_your_langsmith_key
-LANGSMITH_PROJECT=opcenter-rag-staging
-EVALUATION_API_TOKEN=the_same_random_value_stored_in_github
-```
-
-```dotenv
-# Production server .env
-COMPOSE_PROJECT_NAME=opcenter-production
-DEPLOYMENT_ENVIRONMENT=production
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=replace_with_your_langsmith_key
-LANGSMITH_PROJECT=opcenter-rag-production
-```
-
-Create GitHub `staging` and `production` environments. A required reviewer on
-the production environment provides a final human release approval if desired.
-
-Repository secrets:
-
-| Secret | Purpose |
-| --- | --- |
-| `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`, `STAGING_SSH_KNOWN_HOSTS` | Deploy the candidate commit to staging with a pinned host key |
-| `PRODUCTION_SSH_HOST`, `PRODUCTION_SSH_USER`, `PRODUCTION_SSH_KEY`, `PRODUCTION_SSH_KNOWN_HOSTS` | Release the evaluated merge commit with a pinned host key |
-| `GROQ_API_KEY` | Run the separate semantic judge |
-| `EVALUATION_API_TOKEN` | Authenticate protected staging evidence |
-| `LANGSMITH_API_KEY` | Read production trace aggregates and trace links |
-| `LANGSMITH_WORKSPACE_ID` | Optional; required for organization-scoped LangSmith keys |
-
-Repository variables:
-
-| Variable | Example/default |
-| --- | --- |
-| `STAGING_DEPLOY_PATH` | `/srv/opcenter-staging` |
-| `STAGING_SSH_PORT` | `22` |
-| `STAGING_RAG_BACKEND_URL` | Public or runner-accessible staging API URL |
-| `PRODUCTION_DEPLOY_PATH` | `/srv/opcenter-production` |
-| `PRODUCTION_SSH_PORT` | `22` |
-| `LANGSMITH_PRODUCTION_PROJECT` | `opcenter-rag-production` |
-| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` |
-| `MONITOR_LOOKBACK_MINUTES` | `1440` |
-| `MONITOR_MAX_ERROR_RATE` | `0.05` |
-| `MONITOR_MAX_P95_LATENCY` | `75` |
-| `MONITOR_MIN_FEEDBACK_SCORE` | `0.5` |
-| `MONITOR_MAX_AVERAGE_COST_USD` | `0` disables the cost alert; cost is still reported |
-
-The resulting behavior is:
-
-1. An internal, non-draft PR is deployed to staging.
-2. One case from every golden-dataset category runs through deterministic and
-   semantic evaluation. Failure blocks the workflow; success permits merge.
-3. A merge to `main` is deployed to staging again and evaluated with the full
-   dataset. Production is released only after this gate passes.
-4. LangSmith production traces are checked daily for errors, p95 latency,
-   average cost, and low `correctness` or `user_feedback` scores.
-5. A detected issue creates or updates a GitHub issue without copying prompts,
-   answers, or manual content into GitHub.
-6. A human validates the trace and expected answer, adds the JSON golden case,
-   and applies `golden-approved`. GitHub then validates it and opens a dataset PR.
-
-Configure GitHub branch protection after the first run and require the
-candidate evaluation check. Merging remains a human decision; deployment after
-the merge is automatic. Pull requests from forks are not deployed because
-repository secrets are intentionally unavailable to them.
-
-The staging override binds its backend to `127.0.0.1:8003` by default. Route a
-staging HTTPS hostname to that port through the server's reverse proxy and use
-that URL for `STAGING_RAG_BACKEND_URL`. If staging and production are on
-different servers, the port overrides can be changed or omitted.
-
-### Current evaluation workflow and metrics
+### Manual evaluation workflow and metrics
 
 ```mermaid
 flowchart LR
@@ -820,13 +770,6 @@ flowchart LR
     Rules --> Latency["Latency metrics<br/>mean · median/p50 · p95"]
     Rules --> Cases["Per-case deterministic checks"]
     Judge --> Semantic["Semantic metrics<br/>relevance · correctness · faithfulness<br/>completeness · clarity"]
-
-    Quality --> Gate{"CI quality gate"}
-    Latency --> Gate
-    Cases --> Gate
-    Semantic --> Gate
-    Gate -->|"pass"| Merge["Allow merge or deployment"]
-    Gate -->|"fail"| Block["Block regression"]
 
     Quality --> JSON["Machine-readable JSON report"]
     Latency --> JSON
@@ -850,10 +793,11 @@ flowchart LR
 | Semantic quality | Separate LLM judge scores relevance, correctness, faithfulness, completeness, and clarity from 1 to 5 |
 | Judge tokens | Input, output, and total tokens used by semantic evaluation |
 
-### CI-gated evaluation
+### Manual evaluation thresholds
 
 The evaluator writes its JSON and HTML reports before returning a non-zero exit
-code when a gate fails. The default gate is:
+code when a selected threshold fails. This command runs only when invoked
+manually and does not deploy the application. The default thresholds are:
 
 | Check | Default threshold |
 | --- | ---: |
@@ -869,10 +813,10 @@ code when a gate fails. The default gate is:
 | Judge errors | 0 |
 | Normalized drop from accepted baseline | At most 3 percentage points |
 
-Run the gate against a local or candidate/staging backend:
+Run the threshold check against a local or test backend:
 
 ```bash
-EVALUATION_API_TOKEN=replace_with_the_staging_secret \
+EVALUATION_API_TOKEN=replace_with_the_evaluation_secret \
 GROQ_API_KEY=gsk_replace_with_your_key \
 python evaluation.py --backend-url http://127.0.0.1:8000 --llm-judge --gate
 ```
@@ -889,24 +833,6 @@ python evaluation.py --backend-url http://127.0.0.1:8000 --gate \
 
 Every threshold can be overridden with command-line options such as
 `--min-citation-id-accuracy`, `--max-p95-latency`, and `--max-regression`.
-
-The `RAG evaluation gate` GitHub Actions workflow performs a deterministic gate
-contract check on relevant pull requests and pushes. Its candidate job runs the full
-50 cases nightly or manually, and 10 cases when called by a PR deployment
-workflow. Configure the repository variable `STAGING_RAG_BACKEND_URL`, the
-repository secrets `GROQ_API_KEY` and `EVALUATION_API_TOKEN`, or pass a
-branch-specific candidate `backend_url` through `workflow_call`. Never configure
-this variable with the production URL. Reports are uploaded as workflow
-artifacts even when the gate fails.
-
-For a true pull-request merge gate, deploy the PR branch first, call this
-reusable workflow with that deployment URL, and make the caller's live evaluation
-job a required status check in GitHub branch protection. This avoids evaluating
-a shared backend that does not contain the proposed code.
-
-[`delivery-pipeline.yml`](.github/workflows/delivery-pipeline.yml) now performs
-that deployment and calls the reusable gate. On `main`, it repeats evaluation
-with the full dataset before releasing the same commit to production.
 
 The default outputs are stored at `evaluation_results/golden-50-latest.json`
 and `evaluation_results/golden-50-latest.html`. The JSON contains the aggregate
@@ -938,20 +864,18 @@ src/graph.py               LangGraph workflow
 src/nodes.py               RAG nodes and evidence logic
 src/retrieval.py           Chroma/BM25 hybrid retrieval
 src/ingest.py              explicit offline ingestion
+Dockerfile.ingest          OCR-enabled offline ingestion image
+requirements-ocr.txt       Tesseract/Paddle ingestion Python dependencies
 src/llm.py                 asynchronous role-specific Groq calls
 src/groq_limits.py         Redis per-model admission control
 src/embeddings.py          shared embedding and reranker models
 src/cache.py               Redis query/retrieval/answer caches
 src/observability.py       logs and built-in process metrics
+retrieval_benchmark.py     semantic-only versus hybrid retrieval ablation
 evaluation.py              deterministic/semantic evaluator and HTML dashboard
-production_monitor.py      LangSmith production regression monitor
-scripts/deploy_remote.sh   staging/production SSH deployment contract
-scripts/add_golden_case.py validated human-review dataset intake
+scripts/add_golden_case.py manual validated golden-case intake
 tests/evaluation_questions.json  versioned 50-case golden dataset
-.github/workflows/evaluation-gate.yml  CI and scheduled quality gate
-.github/workflows/delivery-pipeline.yml PR staging gate and production release
-.github/workflows/production-monitor.yml trace-to-review issue automation
-.github/workflows/golden-case-intake.yml approved issue-to-dataset PR automation
+tests/retrieval_ground_truth.json exact EvidenceUnit and PDF-page labels
 docker-compose.yml         local production-style deployment
 docker-compose.staging.yml isolated staging backend port
 ```
@@ -973,7 +897,7 @@ docker-compose.staging.yml isolated staging backend port
 ## Limitations
 
 - Answers are limited to the supplied and indexed manuals.
-- Scanned PDFs need OCR preprocessing.
+- OCR accuracy depends on scan resolution, language packs and page complexity.
 - Original figures are returned only when linked to retrieved or cited pages.
 - Retrieval broadening is limited to one pass.
 - Generated diagrams require sufficient verified evidence.

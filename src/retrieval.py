@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 import json
 import logging
-import pickle
 import re
 from typing import Any
 
 import chromadb
 from langchain_core.embeddings import Embeddings
+from rank_bm25 import BM25Okapi
 
 from src.config import Settings, settings
 from src.cache import get as cache_get, normalized, set as cache_set
@@ -89,10 +89,9 @@ def load_resources(config: Settings = settings) -> RetrievalResources:
     evidence_path = config.evidence_units_path
     segments_path = config.retrieval_segments_path
     representations_path = config.search_representations_path
-    bm25_path = config.bm25_path
     if not all(
         path.exists()
-        for path in (evidence_path, segments_path, representations_path, bm25_path)
+        for path in (evidence_path, segments_path, representations_path)
     ):
         raise FileNotFoundError("Run `python -m src.ingest` before retrieval")
 
@@ -111,9 +110,10 @@ def load_resources(config: Settings = settings) -> RetrievalResources:
         raise ValueError("RetrievalSegments reference missing EvidenceUnits")
     if any(item.get("evidence_id") not in evidence_by_id for item in representations):
         raise ValueError("SearchRepresentations reference missing EvidenceUnits")
-    with bm25_path.open("rb") as handle:
-        payload = pickle.load(handle)
-    bm25_ids = tuple(str(segment_id) for segment_id in payload["segment_ids"])
+    bm25_ids = tuple(str(segment["segment_id"]) for segment in segments)
+    bm25 = BM25Okapi(
+        [_bm25_tokens(str(segment["searchable_text"])) for segment in segments]
+    )
     client = _configured_chroma_client(config)
     collection = client.get_collection(config.chroma_collection)
     representation_collection = client.get_collection(REPRESENTATION_COLLECTION)
@@ -138,7 +138,7 @@ def load_resources(config: Settings = settings) -> RetrievalResources:
             for evidence_id, items in segments_by_evidence.items()
         },
         representations_by_id=representations_by_id,
-        bm25=payload["bm25"],
+        bm25=bm25,
         bm25_ids=bm25_ids,
         chroma_collection=collection,
         representation_collection=representation_collection,

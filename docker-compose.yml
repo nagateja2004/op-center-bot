@@ -1,6 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
+    networks: [data]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -10,12 +11,11 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    networks: [data]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-opcenter}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -27,8 +27,7 @@ services:
 
   chroma:
     image: chromadb/chroma:1.5.9
-    ports:
-      - "${CHROMA_EXPOSE_PORT:-8001}:8000"
+    networks: [data]
     volumes:
       - chroma_data:/data
     restart: unless-stopped
@@ -44,18 +43,31 @@ services:
       dockerfile: Dockerfile.backend
     expose:
       - "8000"
+    networks: [edge, data]
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-opcenter}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-opcenter}
       CHECKPOINT_BACKEND: postgres
       REDIS_URL: redis://redis:6379/0
       CHROMA_MODE: server
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
+      GROQ_PLANNER_PRIMARY_MODEL: ${GROQ_PLANNER_PRIMARY_MODEL:-openai/gpt-oss-20b}
+      GROQ_PLANNER_FALLBACK_MODEL: ${GROQ_PLANNER_FALLBACK_MODEL:-openai/gpt-oss-120b}
+      GROQ_QUERY_BROADENING_PRIMARY_MODEL: ${GROQ_QUERY_BROADENING_PRIMARY_MODEL:-openai/gpt-oss-20b}
+      GROQ_QUERY_BROADENING_FALLBACK_MODEL: ${GROQ_QUERY_BROADENING_FALLBACK_MODEL-}
+      GROQ_GRADER_PRIMARY_MODEL: ${GROQ_GRADER_PRIMARY_MODEL:-openai/gpt-oss-20b}
+      GROQ_GRADER_FALLBACK_MODEL: ${GROQ_GRADER_FALLBACK_MODEL:-openai/gpt-oss-120b}
+      GROQ_ANSWER_PRIMARY_MODEL: ${GROQ_ANSWER_PRIMARY_MODEL:-openai/gpt-oss-120b}
+      GROQ_ANSWER_FALLBACK_MODEL: ${GROQ_ANSWER_FALLBACK_MODEL:-qwen/qwen3.6-27b}
+      GROQ_VERIFIER_PRIMARY_MODEL: ${GROQ_VERIFIER_PRIMARY_MODEL:-qwen/qwen3.6-27b}
+      GROQ_VERIFIER_FALLBACK_MODEL: ${GROQ_VERIFIER_FALLBACK_MODEL:-openai/gpt-oss-20b}
+      GROQ_DIAGRAM_PRIMARY_MODEL: ${GROQ_DIAGRAM_PRIMARY_MODEL:-openai/gpt-oss-20b}
+      GROQ_DIAGRAM_FALLBACK_MODEL: ${GROQ_DIAGRAM_FALLBACK_MODEL:-openai/gpt-oss-120b}
     volumes:
-      - ./indexes:/app/indexes
-      - ./manuals:/app/manuals
+      - ./indexes:/app/indexes:ro
+      - ./manuals:/app/manuals:ro
       - huggingface_cache:/app/.cache/huggingface
     restart: unless-stopped
     depends_on:
@@ -81,8 +93,9 @@ services:
       dockerfile: Dockerfile.frontend
     environment:
       BACKEND_URL: http://backend:8000
+    networks: [edge]
     ports:
-      - "${APP_PORT:-8501}:8501"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8501}:8501"
     depends_on:
       backend:
         condition: service_healthy
@@ -98,8 +111,9 @@ services:
     profiles: ["tools"]
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: Dockerfile.ingest
     command: ["python", "-m", "src.ingest"]
+    networks: [data]
     env_file:
       - .env
     environment:
@@ -110,6 +124,7 @@ services:
       - ./indexes:/app/indexes
       - ./manuals:/app/manuals:ro
       - huggingface_cache:/app/.cache/huggingface
+      - paddle_cache:/home/appuser/.paddlex
     depends_on:
       chroma:
         condition: service_healthy
@@ -120,6 +135,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     command: ["python", "load_test.py", "--backend-url", "http://backend:8000", "--users", "50"]
+    networks: [data]
     depends_on:
       backend:
         condition: service_healthy
@@ -130,8 +146,11 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     command: ["python", "evaluation.py", "--backend-url", "http://backend:8000", "--llm-judge", "--gate"]
+    networks: [data]
     env_file:
       - .env
+    environment:
+      GROQ_JUDGE_MODEL: ${GROQ_JUDGE_MODEL:-openai/gpt-oss-20b}
     volumes:
       - ./evaluation_results:/app/evaluation_results
     depends_on:
@@ -140,5 +159,10 @@ services:
 
 volumes:
   huggingface_cache:
+  paddle_cache:
   postgres_data:
   chroma_data:
+
+networks:
+  edge:
+  data:

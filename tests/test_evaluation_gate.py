@@ -9,6 +9,7 @@ from evaluation import (
     evaluate_gate,
     judge_response,
     parse_semantic_judgment,
+    validated_backend_url,
 )
 
 
@@ -28,6 +29,15 @@ def report(**overrides):
 
 
 class EvaluationGateTests(unittest.TestCase):
+    def test_backend_url_rejects_non_http_and_embedded_credentials(self):
+        self.assertEqual(
+            validated_backend_url("https://staging.example.com/"),
+            "https://staging.example.com",
+        )
+        for value in ("file:///tmp/result", "https://user:secret@example.com"):
+            with self.assertRaises(ValueError):
+                validated_backend_url(value)
+
     def test_golden_dataset_has_at_least_50_unique_labeled_cases(self):
         cases = json.loads(
             Path("tests/evaluation_questions.json").read_text(encoding="utf-8")

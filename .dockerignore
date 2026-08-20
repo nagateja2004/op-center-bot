@@ -24,6 +24,9 @@ dist/
 htmlcov/
 production_monitor_report.json
 production_issue.md
+evaluation_results/
+output/
+Interview_Revision_Pack/
 .cache/
 data/*
 !data/.gitkeep

@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/app/.cache/huggingface \
+    TOKENIZERS_PARALLELISM=false \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        graphviz \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 appuser
+
+WORKDIR /app
+COPY requirements-backend.txt requirements-ocr.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements-ocr.txt
+
+COPY . .
+RUN mkdir -p indexes manuals .cache/huggingface /home/appuser/.paddlex \
+    && chown -R appuser:appuser /app /home/appuser/.paddlex
+
+USER appuser
+CMD ["python", "-m", "src.ingest"]

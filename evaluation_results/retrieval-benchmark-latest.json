@@ -1,0 +1,1888 @@
+{
+  "generated_at": "2026-08-20T06:39:43.189250+00:00",
+  "configuration": {
+    "k": 5,
+    "case_count": 50,
+    "scored_case_count": 44,
+    "semantic_pipeline": "Chroma dense-vector retrieval",
+    "hybrid_pipeline": "Chroma + BM25 + weighted RRF + context expansion + cross-encoder reranking",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "reranker_model_revision": "c5ee24cb16019beea0893ab7796b1df96625c6b8",
+    "vector_top_k": 12,
+    "bm25_top_k": 12,
+    "fused_top_k": 18,
+    "warmup_query": "Opcenter retrieval benchmark warmup",
+    "python_version": "3.12.13",
+    "platform": "macOS-15.5-arm64-arm-64bit"
+  },
+  "comparison": {
+    "semantic_only": {
+      "precision_at_k": 0.1181818181818182,
+      "recall_at_k": 0.48863636363636365,
+      "f1_at_k": 0.18722943722943725,
+      "reciprocal_rank": 0.39356060606060606,
+      "mean_latency_seconds": 0.0073573418988168915,
+      "p50_latency_seconds": 0.007356583490036428,
+      "p95_latency_seconds": 0.00946874561486766
+    },
+    "hybrid": {
+      "precision_at_k": 0.18636363636363637,
+      "recall_at_k": 0.7386363636363636,
+      "f1_at_k": 0.29220779220779225,
+      "reciprocal_rank": 0.6712121212121213,
+      "mean_latency_seconds": 0.13927450466805816,
+      "p50_latency_seconds": 0.1412233749870211,
+      "p95_latency_seconds": 0.17499779377831148
+    },
+    "absolute_f1_lift": 0.104978354978355,
+    "relative_f1_lift": 0.5606936416184972
+  },
+  "cases": [
+    {
+      "id": "direct_01",
+      "category": "direct",
+      "question": "What is a Factory?",
+      "scored": true,
+      "relevant_ids": [
+        "e_4c479bc97ce91830dee94824"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_1bafde910bc464772299dd32",
+          "e_91fdd7e62fb8a3810c4fa9ca",
+          "e_34998df6e986ecf3e8008b2a"
+        ],
+        "latency_seconds": 0.00763137498870492,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_1bafde910bc464772299dd32",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_d489537e65f5452dbead4eb1"
+        ],
+        "latency_seconds": 0.14550724998116493,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "direct_02",
+      "category": "direct",
+      "question": "What is a Resource?",
+      "scored": true,
+      "relevant_ids": [
+        "e_1491bf94daca483e04483560"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_2d9a89be75e63f208ea1d9b4",
+          "e_1491bf94daca483e04483560",
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_f9285754ff778d3ea1422f66",
+          "e_f953da9ee96a26a548b83b0b"
+        ],
+        "latency_seconds": 0.00616816699039191,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_1491bf94daca483e04483560",
+          "e_2d9a89be75e63f208ea1d9b4",
+          "e_f9285754ff778d3ea1422f66"
+        ],
+        "latency_seconds": 0.1220560830552131,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "direct_03",
+      "category": "direct",
+      "question": "What is a Container?",
+      "scored": true,
+      "relevant_ids": [
+        "e_fa2ff24472393946618efcc3"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_fa2ff24472393946618efcc3",
+          "e_6650763da4cc18f78a5be1eb",
+          "e_3a44f58a1bbe621f2ca2da7a",
+          "e_5870e15177919b89933efcb4",
+          "e_dcea98b76c57a82fa9e82d11"
+        ],
+        "latency_seconds": 0.006872750003822148,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_fa2ff24472393946618efcc3",
+          "e_3a44f58a1bbe621f2ca2da7a",
+          "e_dcea98b76c57a82fa9e82d11",
+          "e_6650763da4cc18f78a5be1eb",
+          "e_5870e15177919b89933efcb4"
+        ],
+        "latency_seconds": 0.11372499994467944,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "direct_04",
+      "category": "direct",
+      "question": "What is a configurable data object?",
+      "scored": true,
+      "relevant_ids": [
+        "e_811c57bcb340ab5855811529"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_9a3982db10aed66b4eb9d996",
+          "e_429d47b21e0a1b0dacaa14d7",
+          "e_9a250a1b59b5dba3279d0475",
+          "e_df1d9022fbf8b3c617603e25",
+          "e_25e5b37ac1e70f2df2b2951c"
+        ],
+        "latency_seconds": 0.006591250072233379,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_45f19ed034acf8134f9de409",
+          "e_811c57bcb340ab5855811529",
+          "e_df1d9022fbf8b3c617603e25",
+          "e_25e5b37ac1e70f2df2b2951c",
+          "e_429d47b21e0a1b0dacaa14d7"
+        ],
+        "latency_seconds": 0.1466109580360353,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "direct_05",
+      "category": "direct",
+      "question": "What is a configurable logic flow?",
+      "scored": true,
+      "relevant_ids": [
+        "e_bc267546c6999f331d68034d"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_1696d107268c1af26ea88fbb",
+          "e_a3d4b25ca4e0f84939575a4a",
+          "e_1a7955bf64377eba2ae5e24f",
+          "e_b4d20d80519769ecd2c77db1",
+          "e_311faba88a9ec5e982eacaaa"
+        ],
+        "latency_seconds": 0.009603833081200719,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_bc267546c6999f331d68034d",
+          "e_461545b5b11d8ba0e1af5a49",
+          "e_7ebc88e68ec5f06d29ccae51",
+          "e_65a50f68862e4a713fd863ae"
+        ],
+        "latency_seconds": 0.14039199997205287,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "direct_06",
+      "category": "direct",
+      "question": "What is Factory Hierarchy?",
+      "scored": true,
+      "relevant_ids": [
+        "e_1bafde910bc464772299dd32"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_1bafde910bc464772299dd32",
+          "e_4c479bc97ce91830dee94824",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_80f7a5cf6582783d9a7ab3b3"
+        ],
+        "latency_seconds": 0.008028166019357741,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_80f7a5cf6582783d9a7ab3b3",
+          "e_cb402800f41d1dd1fd1a3dc4"
+        ],
+        "latency_seconds": 0.13648045901209116,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "direct_07",
+      "category": "direct",
+      "question": "What is Portal Studio 2.0?",
+      "scored": true,
+      "relevant_ids": [
+        "e_b16070605b2f3980dd8b392a"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_b16070605b2f3980dd8b392a",
+          "e_663d01dab7345903bd8fc737",
+          "e_307f109169930c13e1a31e65",
+          "e_4d48ce5f673273323c848582",
+          "e_999cca5aaceec80c50464d57"
+        ],
+        "latency_seconds": 0.0065245829755440354,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_b16070605b2f3980dd8b392a",
+          "e_219b2730e4b2653f7415e6b8",
+          "e_866a1abf8389a73f7c537bd9",
+          "e_663d01dab7345903bd8fc737",
+          "e_4d48ce5f673273323c848582"
+        ],
+        "latency_seconds": 0.13326079200487584,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "indirect_01",
+      "category": "indirect",
+      "question": "Which modeling object represents an accounting and reporting division?",
+      "scored": true,
+      "relevant_ids": [
+        "e_4c479bc97ce91830dee94824"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_92c81f1bf5fc84803d74afc6",
+          "e_7464ccaa11fce03d4deb5fcf",
+          "e_e95584091fbfb6d144c02eda",
+          "e_b7ce5545bd87aa5af68967ec",
+          "e_ac52d3b08acdd214d3d076e0"
+        ],
+        "latency_seconds": 0.008200875017791986,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_d40344fbca90baabb1d1c2bc",
+          "e_e95584091fbfb6d144c02eda",
+          "e_b7ce5545bd87aa5af68967ec",
+          "e_7464ccaa11fce03d4deb5fcf"
+        ],
+        "latency_seconds": 0.1819136660778895,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "indirect_02",
+      "category": "indirect",
+      "question": "How does the system represent manufacturing equipment?",
+      "scored": true,
+      "relevant_ids": [
+        "e_1491bf94daca483e04483560"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_8022b8af69027a3d32b63a50",
+          "e_4c479bc97ce91830dee94824",
+          "e_4f212540cdfa23d9d0c97233",
+          "e_6abbeb02cd335dd843cc4c48",
+          "e_34998df6e986ecf3e8008b2a"
+        ],
+        "latency_seconds": 0.007923291064798832,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_8022b8af69027a3d32b63a50",
+          "e_1ce7bd71078f5d9af0ac2d37",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_5681b502f7dd8db1db1fb3c5",
+          "e_4c479bc97ce91830dee94824"
+        ],
+        "latency_seconds": 0.14784062502440065,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "indirect_03",
+      "category": "indirect",
+      "question": "Where are items grouped while they move through production?",
+      "scored": true,
+      "relevant_ids": [
+        "e_fa2ff24472393946618efcc3"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_61cb562d12817440fc138bf5",
+          "e_2b07427c5760ed2b87a13312",
+          "e_e6714f218e403727614c2294",
+          "e_a9a0b62c2e7ea74b12c5b641",
+          "e_4f212540cdfa23d9d0c97233"
+        ],
+        "latency_seconds": 0.007854625000618398,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_c4a125867d132572605f904d",
+          "e_a9a0b62c2e7ea74b12c5b641",
+          "e_81c12ad02aa8bd3fbd03f387",
+          "e_5681b502f7dd8db1db1fb3c5",
+          "e_e431bb8beeb8e160ea1448ca"
+        ],
+        "latency_seconds": 0.15351983299478889,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "indirect_04",
+      "category": "indirect",
+      "question": "Which Designer feature lets me define reusable business data?",
+      "scored": true,
+      "relevant_ids": [
+        "e_811c57bcb340ab5855811529"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_53fc43dd43215598bdea253e",
+          "e_7464ccaa11fce03d4deb5fcf",
+          "e_e7188e37374c562306f8ae2f",
+          "e_411f87f3e57f93b5b680ce73",
+          "e_0fe48a774b62b69a3721029c"
+        ],
+        "latency_seconds": 0.007802875014021993,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_e7188e37374c562306f8ae2f",
+          "e_ddefcd4e7a2b1a40fbe1afad",
+          "e_53fc43dd43215598bdea253e",
+          "e_c585ff8b062077e558eaaa4a",
+          "e_7464ccaa11fce03d4deb5fcf"
+        ],
+        "latency_seconds": 0.15188987494911999,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "indirect_05",
+      "category": "indirect",
+      "question": "What feature models configurable execution logic without hard-coding it?",
+      "scored": true,
+      "relevant_ids": [
+        "e_a214c9a09e405b53d0a69f80"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_7ebc88e68ec5f06d29ccae51",
+          "e_a214c9a09e405b53d0a69f80",
+          "e_ecd970ac96f348d12a447019",
+          "e_c585ff8b062077e558eaaa4a",
+          "e_a3d4b25ca4e0f84939575a4a"
+        ],
+        "latency_seconds": 0.0076116250129416585,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_a214c9a09e405b53d0a69f80",
+          "e_7ebc88e68ec5f06d29ccae51",
+          "e_7731819a74d4cb045b6d1091",
+          "e_c585ff8b062077e558eaaa4a",
+          "e_ecd970ac96f348d12a447019"
+        ],
+        "latency_seconds": 0.10573499999009073,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "indirect_06",
+      "category": "indirect",
+      "question": "How are enterprise, factory, area and resource levels related?",
+      "scored": true,
+      "relevant_ids": [
+        "e_69db3be155b5cddfdcdf8693"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_69db3be155b5cddfdcdf8693",
+          "e_1bafde910bc464772299dd32",
+          "e_4c479bc97ce91830dee94824",
+          "e_8022b8af69027a3d32b63a50",
+          "e_73c2204ca6c1df7eb5032b73"
+        ],
+        "latency_seconds": 0.010666999965906143,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_69db3be155b5cddfdcdf8693",
+          "e_1bafde910bc464772299dd32",
+          "e_c1539a6efc2c363151c52c54",
+          "e_f8085fee87a0ddc980670b80",
+          "e_dc2725ce57813ff918812253"
+        ],
+        "latency_seconds": 0.16004733298905194,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "indirect_07",
+      "category": "indirect",
+      "question": "Which tool is used to design portal pages and web parts?",
+      "scored": true,
+      "relevant_ids": [
+        "e_189c76a415834641b1d67a96",
+        "e_b16070605b2f3980dd8b392a"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_189c76a415834641b1d67a96",
+          "e_3fdfd09bc06c9366be9c0ed7",
+          "e_6de3a315acdd5e54d6244f27",
+          "e_e05a3fd1dc253481082d811a",
+          "e_9885b5f28aaafa1cb316cc00"
+        ],
+        "latency_seconds": 0.007429957971908152,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_3fdfd09bc06c9366be9c0ed7",
+          "e_9885b5f28aaafa1cb316cc00",
+          "e_df6d72909dcbb8b7b68e30ea",
+          "e_6de3a315acdd5e54d6244f27",
+          "e_189c76a415834641b1d67a96"
+        ],
+        "latency_seconds": 0.15012337500229478,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 0.2
+        }
+      }
+    },
+    {
+      "id": "indirect_08",
+      "category": "indirect",
+      "question": "How does a terminal determine the employee production line?",
+      "scored": true,
+      "relevant_ids": [
+        "e_ffa956a86bdfa02be09e20e9"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_d052500fd19e50fb6123f864",
+          "e_20994a89d3b65a22987b959e",
+          "e_b8705d1d77e097d3af46c00c",
+          "e_8993dd326f044ad5466ec8c9",
+          "e_a143fd086870d0e1b79800d7"
+        ],
+        "latency_seconds": 0.010556375025771558,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_7916460e9856f071775ecfc9",
+          "e_ffa956a86bdfa02be09e20e9",
+          "e_614c77f9092faddd50309d5c",
+          "e_81f7c68c93b8858e9bb8372b",
+          "e_d26723a9fe8245d94b5bf45f"
+        ],
+        "latency_seconds": 0.09664800006430596,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "follow_01",
+      "category": "follow_up",
+      "question": "What is a Factory? How do I define it?",
+      "scored": true,
+      "relevant_ids": [
+        "e_8cf95b6182026b99faaad751"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_d489537e65f5452dbead4eb1",
+          "e_73c2204ca6c1df7eb5032b73"
+        ],
+        "latency_seconds": 0.006158042000606656,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_d054bcd4672ef0447f253057"
+        ],
+        "latency_seconds": 0.11489533295389265,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "follow_02",
+      "category": "follow_up",
+      "question": "What is Factory Hierarchy? Show its relationship structure.",
+      "scored": true,
+      "relevant_ids": [
+        "e_1bafde910bc464772299dd32"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_1bafde910bc464772299dd32",
+          "e_4c479bc97ce91830dee94824",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_80f7a5cf6582783d9a7ab3b3"
+        ],
+        "latency_seconds": 0.007363084005191922,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_80f7a5cf6582783d9a7ab3b3",
+          "e_73c2204ca6c1df7eb5032b73",
+          "e_cb402800f41d1dd1fd1a3dc4"
+        ],
+        "latency_seconds": 0.11467450007330626,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "follow_03",
+      "category": "follow_up",
+      "question": "What is a Resource? Which fields does it use?",
+      "scored": true,
+      "relevant_ids": [
+        "e_7f3d0519ae557b106f9fcf99"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_2d9a89be75e63f208ea1d9b4",
+          "e_1491bf94daca483e04483560",
+          "e_24525d249b725ae4ffa01be8",
+          "e_fa9d76564c1ac6a29e486916",
+          "e_8512856bece2036d576f873a"
+        ],
+        "latency_seconds": 0.006024250062182546,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_2d9a89be75e63f208ea1d9b4",
+          "e_fa9d76564c1ac6a29e486916",
+          "e_1491bf94daca483e04483560",
+          "e_8512856bece2036d576f873a",
+          "e_b5b04b33bd2a067cfdd75382"
+        ],
+        "latency_seconds": 0.13971491600386798,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "follow_04",
+      "category": "follow_up",
+      "question": "Explain line assignment. How do I set it?",
+      "scored": true,
+      "relevant_ids": [
+        "e_31b6530d4a1a24f30417e123",
+        "e_8331b903b3f8ed7ec37d2034"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_9ab6268afed519e042a05db1",
+          "e_6d01b4230e3bd6a8fbbde9cc",
+          "e_7ce956bda715e75f2eb241cc",
+          "e_ec50a1c11c061bf45a226b23",
+          "e_7c30c252e0ce51cf8efa7612"
+        ],
+        "latency_seconds": 0.007350082974880934,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_3600f06a603c23576bc1828c",
+          "e_31b6530d4a1a24f30417e123",
+          "e_5fafa3755480a5d0a0346938",
+          "e_8331b903b3f8ed7ec37d2034",
+          "e_7c30c252e0ce51cf8efa7612"
+        ],
+        "latency_seconds": 0.11843258305452764,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "follow_05",
+      "category": "follow_up",
+      "question": "What is a configurable data object? How is it different from an NDO?",
+      "scored": true,
+      "relevant_ids": [
+        "e_811c57bcb340ab5855811529",
+        "e_96a2374895b38a5886d1fe78"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_96a2374895b38a5886d1fe78",
+          "e_803149be1ef838d064666332",
+          "e_ef315699873eb7ac6236c7cf",
+          "e_429d47b21e0a1b0dacaa14d7",
+          "e_d3106a1ee51eab0c3936c096"
+        ],
+        "latency_seconds": 0.007089582970365882,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_d3106a1ee51eab0c3936c096",
+          "e_96a2374895b38a5886d1fe78",
+          "e_803149be1ef838d064666332",
+          "e_04f2550b869010e352fa9df4",
+          "e_ef315699873eb7ac6236c7cf"
+        ],
+        "latency_seconds": 0.15493683295790106,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "procedure_01",
+      "category": "procedure",
+      "question": "How do I define a Factory?",
+      "scored": true,
+      "relevant_ids": [
+        "e_8cf95b6182026b99faaad751"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_4c479bc97ce91830dee94824",
+          "e_1bafde910bc464772299dd32",
+          "e_91fdd7e62fb8a3810c4fa9ca",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_73c2204ca6c1df7eb5032b73"
+        ],
+        "latency_seconds": 0.00648049998562783,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_8cf95b6182026b99faaad751",
+          "e_4c479bc97ce91830dee94824",
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_de14442673d6f60dbbf5595d"
+        ],
+        "latency_seconds": 0.1249322920339182,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "procedure_02",
+      "category": "procedure",
+      "question": "How do I add a location to a Factory?",
+      "scored": true,
+      "relevant_ids": [
+        "e_bdc87328d202ddbfef71d437"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_555a98d1b7f954eef3182339",
+          "e_d5e39deaff21ba0761796c97",
+          "e_ff747347336d47925476bc16",
+          "e_dc2725ce57813ff918812253",
+          "e_4539e5c92b2b4ddd8a60584c"
+        ],
+        "latency_seconds": 0.007438707980327308,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_bdc87328d202ddbfef71d437",
+          "e_2b61ea45dae3572c8079aa34",
+          "e_8cf95b6182026b99faaad751",
+          "e_d5e39deaff21ba0761796c97",
+          "e_555a98d1b7f954eef3182339"
+        ],
+        "latency_seconds": 0.1560590830631554,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "procedure_03",
+      "category": "procedure",
+      "question": "How do I log in to Opcenter Execution Core?",
+      "scored": true,
+      "relevant_ids": [
+        "e_5304a17c8e2a013d4ff5752e"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_a57a1ee17368c91ba5a131e1",
+          "e_3958e378ac724100ebfbb06e",
+          "e_5304a17c8e2a013d4ff5752e",
+          "e_b511ced9fbbffff85427c27a",
+          "e_520c52ca982227bd361d66c2"
+        ],
+        "latency_seconds": 0.00771958299446851,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.3333333333333333
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_5304a17c8e2a013d4ff5752e",
+          "e_2a9b7712ac7b2b2d83b07faf",
+          "e_520c52ca982227bd361d66c2",
+          "e_e375c702b26a131b38505b9b"
+        ],
+        "latency_seconds": 0.1320934999966994,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "procedure_04",
+      "category": "procedure",
+      "question": "How do I create a web part in Portal Studio?",
+      "scored": true,
+      "relevant_ids": [
+        "e_dba6c128320f33189f0e6c11"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_dba6c128320f33189f0e6c11",
+          "e_c780d1d98f33efd79fe3147e",
+          "e_9fe5b9517e2bf67dbd227ce7",
+          "e_fcd21a366686ffd783707b04",
+          "e_ac01bde3c3840143cc32232c"
+        ],
+        "latency_seconds": 0.006671083974651992,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_dba6c128320f33189f0e6c11",
+          "e_2b7c6c56a47ca1a425a2f516",
+          "e_e7f7ea044e6a3ce1af402093",
+          "e_fcd21a366686ffd783707b04",
+          "e_c780d1d98f33efd79fe3147e"
+        ],
+        "latency_seconds": 0.13593229092657566,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "procedure_05",
+      "category": "procedure",
+      "question": "How do I collect resource data?",
+      "scored": true,
+      "relevant_ids": [
+        "e_24a53d8e63a0c6d5b6fd3c6d"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_24a53d8e63a0c6d5b6fd3c6d",
+          "e_f34b7f5d8b6feb7df70ddf88",
+          "e_1491bf94daca483e04483560",
+          "e_3a000bd8e4f958e2e6b0cf32",
+          "e_34974173ddc95f42978b4780"
+        ],
+        "latency_seconds": 0.006554458988830447,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_24a53d8e63a0c6d5b6fd3c6d",
+          "e_f34b7f5d8b6feb7df70ddf88",
+          "e_3a000bd8e4f958e2e6b0cf32",
+          "e_34974173ddc95f42978b4780"
+        ],
+        "latency_seconds": 0.15133137500379235,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "table_01",
+      "category": "table_field",
+      "question": "Show the Factory field definitions.",
+      "scored": true,
+      "relevant_ids": [
+        "e_56077ba1bb88bc1171fb481c"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_d489537e65f5452dbead4eb1",
+          "e_4c479bc97ce91830dee94824",
+          "e_56077ba1bb88bc1171fb481c",
+          "e_6d8e57a9bb4ced9c6e2980e6",
+          "e_bd4a775af0453d58ec37d150"
+        ],
+        "latency_seconds": 0.008703249972313643,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.3333333333333333
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_56077ba1bb88bc1171fb481c",
+          "e_6d8e57a9bb4ced9c6e2980e6",
+          "e_4c479bc97ce91830dee94824",
+          "e_434e719537316de7d56e4116"
+        ],
+        "latency_seconds": 0.18751429195981473,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "table_02",
+      "category": "table_field",
+      "question": "What fields are on the Set Line Assignment pop-up?",
+      "scored": true,
+      "relevant_ids": [
+        "e_9ab6268afed519e042a05db1"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_ec50a1c11c061bf45a226b23",
+          "e_9ab6268afed519e042a05db1",
+          "e_7c30c252e0ce51cf8efa7612",
+          "e_5f9cf8503f62dafb5d91d802",
+          "e_5fafa3755480a5d0a0346938"
+        ],
+        "latency_seconds": 0.008345874957740307,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_ec50a1c11c061bf45a226b23",
+          "e_8331b903b3f8ed7ec37d2034",
+          "e_9ab6268afed519e042a05db1",
+          "e_5f9cf8503f62dafb5d91d802",
+          "e_bab1d06e3127e3a9c9e2220e"
+        ],
+        "latency_seconds": 0.1312868749955669,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "id": "table_03",
+      "category": "table_field",
+      "question": "List the Resource page field definitions.",
+      "scored": true,
+      "relevant_ids": [
+        "e_7f3d0519ae557b106f9fcf99"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_8512856bece2036d576f873a",
+          "e_f953da9ee96a26a548b83b0b",
+          "e_4ab111a903c31d6d595b39b8",
+          "e_1af394d8e7ad7b32c0e15976",
+          "e_7f3d0519ae557b106f9fcf99"
+        ],
+        "latency_seconds": 0.005923458957113326,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 0.2
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_7f3d0519ae557b106f9fcf99",
+          "e_4ab111a903c31d6d595b39b8",
+          "e_fd6e125061c09643f2276afc",
+          "e_f953da9ee96a26a548b83b0b",
+          "e_2468a77be15ae572602eacee"
+        ],
+        "latency_seconds": 0.09688362490851432,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "table_04",
+      "category": "table_field",
+      "question": "Show the configurable data object field type definitions.",
+      "scored": true,
+      "relevant_ids": [
+        "e_c584aaca5aec01f7c7121081"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_429d47b21e0a1b0dacaa14d7",
+          "e_7d0ff169bbb2d516d743299e",
+          "e_188cb2f7ea82636efe9c006d",
+          "e_eb569f3dd9564b0aa8537cc8",
+          "e_25e5b37ac1e70f2df2b2951c"
+        ],
+        "latency_seconds": 0.0065828339429572225,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_7d0ff169bbb2d516d743299e",
+          "e_429d47b21e0a1b0dacaa14d7",
+          "e_25e5b37ac1e70f2df2b2951c"
+        ],
+        "latency_seconds": 0.14271183405071497,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "table_05",
+      "category": "table_field",
+      "question": "Which columns are defined for the Factory Hierarchy page?",
+      "scored": true,
+      "relevant_ids": [
+        "e_cb402800f41d1dd1fd1a3dc4"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_cb402800f41d1dd1fd1a3dc4",
+          "e_d489537e65f5452dbead4eb1",
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_4c479bc97ce91830dee94824"
+        ],
+        "latency_seconds": 0.006371416966430843,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_cb402800f41d1dd1fd1a3dc4",
+          "e_80f7a5cf6582783d9a7ab3b3",
+          "e_1bafde910bc464772299dd32",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_8022b8af69027a3d32b63a50"
+        ],
+        "latency_seconds": 0.15188216709066182,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "comparison_01",
+      "category": "comparison",
+      "question": "Compare a Factory and a Resource.",
+      "scored": true,
+      "relevant_ids": [
+        "e_1491bf94daca483e04483560",
+        "e_4c479bc97ce91830dee94824"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_6abbeb02cd335dd843cc4c48",
+          "e_4c479bc97ce91830dee94824",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_1bafde910bc464772299dd32"
+        ],
+        "latency_seconds": 0.00722312496509403,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1491bf94daca483e04483560",
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_1bafde910bc464772299dd32",
+          "e_4554703195bbedd7e5b5085d"
+        ],
+        "latency_seconds": 0.1420547500019893,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "comparison_02",
+      "category": "comparison",
+      "question": "What is the difference between a CDO and an NDO?",
+      "scored": true,
+      "relevant_ids": [
+        "e_811c57bcb340ab5855811529",
+        "e_96a2374895b38a5886d1fe78"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_d3106a1ee51eab0c3936c096",
+          "e_b6852f9a515ad23586e284f7",
+          "e_58228d15e3fc91888add3b30",
+          "e_54ec7d12e039853cafc3eea1",
+          "e_e349c7d068fa55d6f0fc7fa6"
+        ],
+        "latency_seconds": 0.00795749993994832,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_d3106a1ee51eab0c3936c096",
+          "e_58228d15e3fc91888add3b30",
+          "e_803149be1ef838d064666332",
+          "e_b6852f9a515ad23586e284f7"
+        ],
+        "latency_seconds": 0.13928950007539243,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "comparison_03",
+      "category": "comparison",
+      "question": "Compare a Resource and a Resource Location.",
+      "scored": true,
+      "relevant_ids": [
+        "e_1491bf94daca483e04483560",
+        "e_69db3be155b5cddfdcdf8693"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_1491bf94daca483e04483560",
+          "e_349c41b6b8a9891fe40106e9",
+          "e_2d9a89be75e63f208ea1d9b4",
+          "e_a69dba44c5e11b0b9e794112"
+        ],
+        "latency_seconds": 0.005658625042997301,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1491bf94daca483e04483560",
+          "e_4554703195bbedd7e5b5085d",
+          "e_69db3be155b5cddfdcdf8693",
+          "e_b8073cd288b3e2bc3a6926c0",
+          "e_61cb562d12817440fc138bf5"
+        ],
+        "latency_seconds": 0.1564145419979468,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "comparison_04",
+      "category": "comparison",
+      "question": "How do CLFs differ from configurable data objects?",
+      "scored": true,
+      "relevant_ids": [
+        "e_45f19ed034acf8134f9de409",
+        "e_a214c9a09e405b53d0a69f80"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_df1d9022fbf8b3c617603e25",
+          "e_d284182bdd534150dcf97736",
+          "e_bc267546c6999f331d68034d",
+          "e_80a19f30bdc7ea5de1a28ce6",
+          "e_84cc5b544d3239a6262fbb8a"
+        ],
+        "latency_seconds": 0.006784124998375773,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_df1d9022fbf8b3c617603e25",
+          "e_45f19ed034acf8134f9de409",
+          "e_811c57bcb340ab5855811529",
+          "e_a214c9a09e405b53d0a69f80",
+          "e_80a19f30bdc7ea5de1a28ce6"
+        ],
+        "latency_seconds": 0.15334566601086408,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 0.5
+        }
+      }
+    },
+    {
+      "id": "unsupported_01",
+      "category": "unsupported",
+      "question": "Does Opcenter support Kubernetes autoscaling?",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "unsupported_02",
+      "category": "unsupported",
+      "question": "How does Opcenter use predictive AI for automatic quality decisions?",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "unsupported_03",
+      "category": "unsupported",
+      "question": "Show the Opcenter blockchain deployment procedure.",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "irrelevant_01",
+      "category": "irrelevant",
+      "question": "How do I bake a chocolate cake?",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "irrelevant_02",
+      "category": "irrelevant",
+      "question": "What will the weather be tomorrow?",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "irrelevant_03",
+      "category": "irrelevant",
+      "question": "Write a poem about the ocean.",
+      "scored": false,
+      "reason": "no relevant evidence expected"
+    },
+    {
+      "id": "electronics_01",
+      "category": "electronics",
+      "question": "What is Opcenter Execution Electronics?",
+      "scored": true,
+      "relevant_ids": [
+        "e_733d5e8f7d41a39f2c43886e"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_733d5e8f7d41a39f2c43886e",
+          "e_d3d843608a0629a681b699dd",
+          "e_8f17365093d7930c91eec77a",
+          "e_e79a8cca688403753157d230",
+          "e_b600e8ec7e500c36cc9cbe26"
+        ],
+        "latency_seconds": 0.005974458064883947,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_733d5e8f7d41a39f2c43886e",
+          "e_d3d843608a0629a681b699dd",
+          "e_e79a8cca688403753157d230",
+          "e_ca3fdebaa794b6f9cdb19153"
+        ],
+        "latency_seconds": 0.13795045809820294,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "electronics_02",
+      "category": "electronics",
+      "question": "How do I set up a new manufacturing product in Opcenter Execution Electronics?",
+      "scored": true,
+      "relevant_ids": [
+        "e_9144329369957fcfcebfadd4"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_99ed849d88b8cb1de61bf790",
+          "e_67d0182ea59e8a2d2fef333a",
+          "e_87223cf59346e35cdfc5e9a9",
+          "e_55a597221f3e1719c97ef9d4",
+          "e_1319d31d1b89c4b0f5960cbc"
+        ],
+        "latency_seconds": 0.007428749930113554,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_2faeebd18670899511d33253",
+          "e_3bcafd80eded8b76ac2cbc61",
+          "e_89e11d3876fc3b095e6fc0a9",
+          "e_9a35f926aa31448013b0b877",
+          "e_72a15de52bf5066b3241eb17"
+        ],
+        "latency_seconds": 0.17728812503628433,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "electronics_03",
+      "category": "electronics",
+      "question": "Give me the steps for starting containers in Opcenter Execution Electronics.",
+      "scored": true,
+      "relevant_ids": [
+        "e_9f1bfbea0ca7bd77329c09d6",
+        "e_ec77a8e5c9865151ab1f5216"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_ca3fdebaa794b6f9cdb19153",
+          "e_5fc77ac64237c5e8a98e9644",
+          "e_88b5966e5e4a061d620fa27f",
+          "e_40539e6977f569e652aa800a",
+          "e_519a8308d4be9bfabfae79e9"
+        ],
+        "latency_seconds": 0.008217041962780058,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_9f1bfbea0ca7bd77329c09d6",
+          "e_8e88c46b40696c7de7632dd4",
+          "e_c4d319b6edcd6c8ab633aca8",
+          "e_ec77a8e5c9865151ab1f5216"
+        ],
+        "latency_seconds": 0.15555999998468906,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "electronics_04",
+      "category": "electronics",
+      "question": "Explain carrier tracking in Opcenter Execution Electronics.",
+      "scored": true,
+      "relevant_ids": [
+        "e_0fb346d578f0921ee0eb05a1",
+        "e_8e321504e9d7537491ef6fb3"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_f353e161c33932d61268136e",
+          "e_8e321504e9d7537491ef6fb3",
+          "e_0fb346d578f0921ee0eb05a1",
+          "e_93bc9c7fcd17e59334a87a73",
+          "e_6d841e073852b488a37608f5"
+        ],
+        "latency_seconds": 0.007400834001600742,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 0.5
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_0fb346d578f0921ee0eb05a1",
+          "e_8e321504e9d7537491ef6fb3",
+          "e_ec28b816709ea0155a373820",
+          "e_2e7f430768be2baae1289a29",
+          "e_29bfdc6dde4e489e23ae2536"
+        ],
+        "latency_seconds": 0.13938137504737824,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "electronics_05",
+      "category": "electronics",
+      "question": "Show a relationship diagram for physical address management in Opcenter Execution Electronics.",
+      "scored": true,
+      "relevant_ids": [
+        "e_eee51c1ccdd46c3edc9ec3c3"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_ffdf77edce940cf384b58d88",
+          "e_cb75f85a250c24b67748b177",
+          "e_824155408abdc9a753155581",
+          "e_2c7865b6f054238f60c5a8f5",
+          "e_77ad6f6f5998767ef45edf13"
+        ],
+        "latency_seconds": 0.006378499907441437,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_eee51c1ccdd46c3edc9ec3c3",
+          "e_52198a86b66031bc07c66bde",
+          "e_00ebdcf9e61765d2d353cb53",
+          "e_36c20641d85715056fdee7c5"
+        ],
+        "latency_seconds": 0.10671987500973046,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "discrete_01",
+      "category": "discrete",
+      "question": "How do I create a process step in Opcenter EX DS?",
+      "scored": true,
+      "relevant_ids": [
+        "e_1c602a9e0e71959d4ca75586",
+        "e_3c8e591bcd2df47ef4fd54bc"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_cd516ea91dbab63a0a8604bc",
+          "e_1a81279fc02a7d41c02a6f3e",
+          "e_d532b9f9972e6be71947b7a4",
+          "e_1c602a9e0e71959d4ca75586",
+          "e_3c8e591bcd2df47ef4fd54bc"
+        ],
+        "latency_seconds": 0.0076749169966205955,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 0.25
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1c602a9e0e71959d4ca75586",
+          "e_79f4acdb31c758588573d05e",
+          "e_cd516ea91dbab63a0a8604bc",
+          "e_3c8e591bcd2df47ef4fd54bc",
+          "e_1a81279fc02a7d41c02a6f3e"
+        ],
+        "latency_seconds": 0.16201924998313189,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "discrete_02",
+      "category": "discrete",
+      "question": "How are catalogs managed in Opcenter Execution Discrete?",
+      "scored": true,
+      "relevant_ids": [
+        "e_a78c8af2a179a2cdd4297899"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_a78c8af2a179a2cdd4297899",
+          "e_53dcf3d08a4312453e0b842d",
+          "e_71f93f44a9374285fa5d1c41",
+          "e_3b3b9841e50d947f9f5bd0af",
+          "e_66652b31764f4debebaedc5b"
+        ],
+        "latency_seconds": 0.0071457920130342245,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_a78c8af2a179a2cdd4297899",
+          "e_f46255955eebb9a65142efc0",
+          "e_3b3b9841e50d947f9f5bd0af",
+          "e_53dcf3d08a4312453e0b842d"
+        ],
+        "latency_seconds": 0.1542514159809798,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.33333333333333337,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "discrete_03",
+      "category": "discrete",
+      "question": "Explain quality gates in Opcenter Execution Discrete.",
+      "scored": true,
+      "relevant_ids": [
+        "e_a2c69b090a7f347d7a107ca7",
+        "e_f050721364c07932659ac92d"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_e389d4fd3b4eb7567ad23adb",
+          "e_15d781b177431b13d3e09d13",
+          "e_5eb27ff0d1a64adfa4ef9a5f",
+          "e_2596e2a8f8c34d922e3c8667",
+          "e_a2c69b090a7f347d7a107ca7"
+        ],
+        "latency_seconds": 0.006832958897575736,
+        "metrics": {
+          "precision_at_k": 0.2,
+          "recall_at_k": 0.5,
+          "f1_at_k": 0.28571428571428575,
+          "reciprocal_rank": 0.2
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_a2c69b090a7f347d7a107ca7",
+          "e_3aa8cfa1a93b8f3017d91cb0",
+          "e_f050721364c07932659ac92d",
+          "e_2596e2a8f8c34d922e3c8667"
+        ],
+        "latency_seconds": 0.11960720899514854,
+        "metrics": {
+          "precision_at_k": 0.4,
+          "recall_at_k": 1.0,
+          "f1_at_k": 0.5714285714285715,
+          "reciprocal_rank": 1.0
+        }
+      }
+    },
+    {
+      "id": "discrete_04",
+      "category": "discrete",
+      "question": "How is production execution managed in Opcenter Execution Discrete?",
+      "scored": true,
+      "relevant_ids": [
+        "e_2f93222dbf85d3b62df56590"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_0e5f0cc24ecc4667b00baddc",
+          "e_825140c16b79ead748f79907",
+          "e_124b1abab29ed2bc970ed353",
+          "e_d532b9f9972e6be71947b7a4",
+          "e_101ff7772ee944544fb6587a"
+        ],
+        "latency_seconds": 0.006826207973062992,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_7953f7991536babb1b79b1d6",
+          "e_d9fc20b4a8009389fdfebf95",
+          "e_2a68eb84360b5de812eccce4",
+          "e_e634f8d0a5f68bf245a189ad",
+          "e_53d092dae5a377ee85826335"
+        ],
+        "latency_seconds": 0.15799049998167902,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    },
+    {
+      "id": "discrete_05",
+      "category": "discrete",
+      "question": "Give me the steps for completing work order operations in Opcenter Execution Discrete.",
+      "scored": true,
+      "relevant_ids": [
+        "e_17a17a2749ee39f985af7b6f",
+        "e_aa1b50adf53c639e434faa50"
+      ],
+      "semantic_only": {
+        "retrieved_ids": [
+          "e_572cbcb491c6355203c11938",
+          "e_5d1c6bed0dbdb6db44c43b15",
+          "e_16ec8df64bf5e6d9204c7084",
+          "e_1f03699352dcca53ec5b3856",
+          "e_c137711b17da3593d1b482c1"
+        ],
+        "latency_seconds": 0.007977249915711582,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          "e_1d70e5c4d1877d3f1f7f33ef",
+          "e_5680c16301b550ef4e2b83a4",
+          "e_b60afdc9387d5e313de6973e",
+          "e_16ec8df64bf5e6d9204c7084"
+        ],
+        "latency_seconds": 0.0871737910201773,
+        "metrics": {
+          "precision_at_k": 0.0,
+          "recall_at_k": 0.0,
+          "f1_at_k": 0.0,
+          "reciprocal_rank": 0.0
+        }
+      }
+    }
+  ]
+}

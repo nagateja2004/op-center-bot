@@ -1,0 +1,88 @@
+{
+  "direct_01": [{"evidence_id": "e_4c479bc97ce91830dee94824", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 111}],
+  "direct_02": [{"evidence_id": "e_1491bf94daca483e04483560", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 184}],
+  "direct_03": [{"evidence_id": "e_fa2ff24472393946618efcc3", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 73}],
+  "direct_04": [{"evidence_id": "e_811c57bcb340ab5855811529", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 27}],
+  "direct_05": [{"evidence_id": "e_bc267546c6999f331d68034d", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 145}],
+  "direct_06": [{"evidence_id": "e_1bafde910bc464772299dd32", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 238}],
+  "direct_07": [{"evidence_id": "e_b16070605b2f3980dd8b392a", "source_file": "OCEXCR_PortalStudio2_2510plus_R1.pdf", "pdf_page": 23}],
+  "indirect_01": [{"evidence_id": "e_4c479bc97ce91830dee94824", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 111}],
+  "indirect_02": [{"evidence_id": "e_1491bf94daca483e04483560", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 184}],
+  "indirect_03": [{"evidence_id": "e_fa2ff24472393946618efcc3", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 73}],
+  "indirect_04": [{"evidence_id": "e_811c57bcb340ab5855811529", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 27}],
+  "indirect_05": [{"evidence_id": "e_a214c9a09e405b53d0a69f80", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 76}],
+  "indirect_06": [{"evidence_id": "e_69db3be155b5cddfdcdf8693", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 1106}],
+  "indirect_07": [
+    {"evidence_id": "e_b16070605b2f3980dd8b392a", "source_file": "OCEXCR_PortalStudio2_2510plus_R1.pdf", "pdf_page": 23},
+    {"evidence_id": "e_189c76a415834641b1d67a96", "source_file": "OCEXCR_PortalStudio2_2510plus_R1.pdf", "pdf_page": 57}
+  ],
+  "indirect_08": [{"evidence_id": "e_ffa956a86bdfa02be09e20e9", "source_file": "OCEXCR_ShopFloor_2310plus_R1.pdf", "pdf_page": 38}],
+  "follow_01": [{"evidence_id": "e_8cf95b6182026b99faaad751", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 124}],
+  "follow_02": [{"evidence_id": "e_1bafde910bc464772299dd32", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 238}],
+  "follow_03": [{"evidence_id": "e_7f3d0519ae557b106f9fcf99", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 188}],
+  "follow_04": [
+    {"evidence_id": "e_31b6530d4a1a24f30417e123", "source_file": "OCEXCR_ShopFloor_2310plus_R1.pdf", "pdf_page": 38},
+    {"evidence_id": "e_8331b903b3f8ed7ec37d2034", "source_file": "OCEXCR_ShopFloor_2310plus_R1.pdf", "pdf_page": 40}
+  ],
+  "follow_05": [
+    {"evidence_id": "e_811c57bcb340ab5855811529", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 27},
+    {"evidence_id": "e_96a2374895b38a5886d1fe78", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 94}
+  ],
+  "procedure_01": [{"evidence_id": "e_8cf95b6182026b99faaad751", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 124}],
+  "procedure_02": [{"evidence_id": "e_bdc87328d202ddbfef71d437", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 125}],
+  "procedure_03": [{"evidence_id": "e_5304a17c8e2a013d4ff5752e", "source_file": "OCEXCR_GettingStarted_2510plus_R1 1.pdf", "pdf_page": 13}],
+  "procedure_04": [{"evidence_id": "e_dba6c128320f33189f0e6c11", "source_file": "OCEXCR_PortalStudio2_2510plus_R1.pdf", "pdf_page": 58}],
+  "procedure_05": [{"evidence_id": "e_24a53d8e63a0c6d5b6fd3c6d", "source_file": "OCEXCR_ShopFloor_2310plus_R1.pdf", "pdf_page": 417}],
+  "table_01": [{"evidence_id": "e_56077ba1bb88bc1171fb481c", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 116}],
+  "table_02": [{"evidence_id": "e_9ab6268afed519e042a05db1", "source_file": "OCEXCR_ShopFloor_2310plus_R1.pdf", "pdf_page": 40}],
+  "table_03": [{"evidence_id": "e_7f3d0519ae557b106f9fcf99", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 188}],
+  "table_04": [{"evidence_id": "e_c584aaca5aec01f7c7121081", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 174}],
+  "table_05": [{"evidence_id": "e_cb402800f41d1dd1fd1a3dc4", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 239}],
+  "comparison_01": [
+    {"evidence_id": "e_4c479bc97ce91830dee94824", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 111},
+    {"evidence_id": "e_1491bf94daca483e04483560", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 184}
+  ],
+  "comparison_02": [
+    {"evidence_id": "e_811c57bcb340ab5855811529", "source_file": "OCEXCR_Designer_2504plus_R1.pdf", "pdf_page": 27},
+    {"evidence_id": "e_96a2374895b38a5886d1fe78", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 94}
+  ],
+  "comparison_03": [
+    {"evidence_id": "e_1491bf94daca483e04483560", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 184},
+    {"evidence_id": "e_69db3be155b5cddfdcdf8693", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 1106}
+  ],
+  "comparison_04": [
+    {"evidence_id": "e_45f19ed034acf8134f9de409", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 76},
+    {"evidence_id": "e_a214c9a09e405b53d0a69f80", "source_file": "OCEXCR_Modeling_2510plus_R1.pdf", "pdf_page": 76}
+  ],
+  "unsupported_01": [],
+  "unsupported_02": [],
+  "unsupported_03": [],
+  "irrelevant_01": [],
+  "irrelevant_02": [],
+  "irrelevant_03": [],
+  "electronics_01": [{"evidence_id": "e_733d5e8f7d41a39f2c43886e", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 35}],
+  "electronics_02": [{"evidence_id": "e_9144329369957fcfcebfadd4", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 37}],
+  "electronics_03": [
+    {"evidence_id": "e_ec77a8e5c9865151ab1f5216", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 98},
+    {"evidence_id": "e_9f1bfbea0ca7bd77329c09d6", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 105}
+  ],
+  "electronics_04": [
+    {"evidence_id": "e_0fb346d578f0921ee0eb05a1", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 125},
+    {"evidence_id": "e_8e321504e9d7537491ef6fb3", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 126}
+  ],
+  "electronics_05": [{"evidence_id": "e_eee51c1ccdd46c3edc9ec3c3", "source_file": "OCEXEL_ElectronicsUserGuide_2510plus_R1.pdf", "pdf_page": 300}],
+  "discrete_01": [
+    {"evidence_id": "e_3c8e591bcd2df47ef4fd54bc", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 237},
+    {"evidence_id": "e_1c602a9e0e71959d4ca75586", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 237}
+  ],
+  "discrete_02": [{"evidence_id": "e_a78c8af2a179a2cdd4297899", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 130}],
+  "discrete_03": [
+    {"evidence_id": "e_a2c69b090a7f347d7a107ca7", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 183},
+    {"evidence_id": "e_f050721364c07932659ac92d", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 183}
+  ],
+  "discrete_04": [{"evidence_id": "e_2f93222dbf85d3b62df56590", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 352}],
+  "discrete_05": [
+    {"evidence_id": "e_17a17a2749ee39f985af7b6f", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 479},
+    {"evidence_id": "e_aa1b50adf53c639e434faa50", "source_file": "OpcenterEXDS_UserManual.pdf", "pdf_page": 480}
+  ]
+}

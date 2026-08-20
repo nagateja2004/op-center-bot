@@ -53,6 +53,9 @@ class FakeRequestStore:
     async def save_request(self, request_id, payload):
         self.requests[request_id] = payload
 
+    async def get_request(self, request_id):
+        return self.requests.get(request_id)
+
     async def pop_request(self, request_id):
         return self.requests.pop(request_id, None)
 
@@ -71,6 +74,13 @@ def test_health_ready_and_async_chat_stream(monkeypatch) -> None:
     assert client.get("/ready").json() == {"status": "ready", "checks": {"graph": True}}
     assert client.get("/metrics").status_code == 200
 
+    oversized = client.post(
+        "/v1/chat",
+        content=b"{}",
+        headers={"Content-Length": "20000", "Content-Type": "application/json"},
+    )
+    assert oversized.status_code == 413
+
     accepted = client.post("/v1/chat", json={"message": "What is a Factory?"})
     assert accepted.status_code == 202
     identifiers = accepted.json()
@@ -79,7 +89,12 @@ def test_health_ready_and_async_chat_stream(monkeypatch) -> None:
     UUID(identifiers["thread_id"])
     UUID(identifiers["session_id"])
 
-    streamed = client.get(f"/v1/chat/{request_id}/stream")
+    assert client.get(
+        f"/v1/chat/{request_id}/stream",
+        headers={"X-Session-ID": str(UUID(int=1))},
+    ).status_code == 403
+    stream_headers = {"X-Session-ID": identifiers["session_id"]}
+    streamed = client.get(f"/v1/chat/{request_id}/stream", headers=stream_headers)
     assert streamed.status_code == 200
     assert "event: progress" in streamed.text
     assert "event: answer" in streamed.text
@@ -110,7 +125,9 @@ def test_health_ready_and_async_chat_stream(monkeypatch) -> None:
             "client_thread_id": identifiers["thread_id"],
         }
     }
-    assert client.get(f"/v1/chat/{request_id}/stream").status_code == 404
+    assert client.get(
+        f"/v1/chat/{request_id}/stream", headers=stream_headers
+    ).status_code == 404
 
     follow_up = client.post(
         "/v1/chat",
@@ -181,7 +198,10 @@ def test_evaluation_context_requires_token_and_is_not_a_normal_chat_field(monkey
     assert accepted.status_code == 202
     streamed = client.get(
         f"/v1/chat/{accepted.json()['request_id']}/stream",
-        headers={"X-Evaluation-Token": "test-evaluation-token"},
+        headers={
+            "X-Evaluation-Token": "test-evaluation-token",
+            "X-Session-ID": accepted.json()["session_id"],
+        },
     )
     assert streamed.status_code == 200
     assert '"evaluation_context"' in streamed.text

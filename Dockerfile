@@ -14,7 +14,7 @@ RUN apt-get update \
     && useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
-COPY requirements.txt .
+COPY requirements*.txt ./
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 

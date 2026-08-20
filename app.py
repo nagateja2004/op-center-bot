@@ -8,13 +8,31 @@ import json
 import os
 from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import streamlit as st
 
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
+def _validated_backend_url(value: str) -> str:
+    normalized = value.rstrip("/")
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("BACKEND_URL must be an HTTP(S) origin without credentials")
+    return normalized
+
+
+BACKEND_URL = _validated_backend_url(
+    os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+)
 PROGRESS_LABELS = {
     "understand_question": "Understanding question",
     "retrieve_documents": "Searching manuals",
@@ -28,15 +46,23 @@ PROGRESS_LABELS = {
 }
 
 
-def _request(path: str, payload: dict[str, Any] | None = None):
+def _request(
+    path: str,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+):
     body = json.dumps(payload).encode() if payload is not None else None
+    request_headers = dict(headers or {})
+    if body:
+        request_headers["Content-Type"] = "application/json"
     request = Request(
         f"{BACKEND_URL}{path}",
         data=body,
-        headers={"Content-Type": "application/json"} if body else {},
+        headers=request_headers,
         method="POST" if body else "GET",
     )
-    return urlopen(request, timeout=120)
+    # BACKEND_URL is restricted to an HTTP(S) origin at import time.
+    return urlopen(request, timeout=120)  # nosec B310
 
 
 def create_chat(
@@ -61,8 +87,13 @@ def create_chat(
         return json.load(response)
 
 
-def stream_events(request_id: str) -> Iterator[tuple[str, dict[str, Any]]]:
-    with _request(f"/v1/chat/{request_id}/stream") as response:
+def stream_events(
+    request_id: str, session_id: str
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    with _request(
+        f"/v1/chat/{request_id}/stream",
+        headers={"X-Session-ID": session_id},
+    ) as response:
         event = "message"
         data: list[str] = []
         for raw_line in response:
@@ -218,7 +249,9 @@ if prompt:
             status = st.status("Searching and checking the manuals...", expanded=True)
 
             def answer_chunks():
-                for event, data in stream_events(accepted["request_id"]):
+                for event, data in stream_events(
+                    accepted["request_id"], accepted["session_id"]
+                ):
                     if event == "progress" and data.get("node") in PROGRESS_LABELS:
                         status.write(PROGRESS_LABELS[data["node"]])
                     elif event == "answer":

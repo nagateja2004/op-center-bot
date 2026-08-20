@@ -2,7 +2,6 @@ import asyncio
 from inspect import getsource
 import json
 from pathlib import Path
-import pickle
 from types import SimpleNamespace
 
 import chromadb
@@ -105,17 +104,15 @@ def test_table_rows_keep_headers_and_field_definitions() -> None:
     assert recovered == rows[1:]
 
 
-def test_live_chroma_and_bm25_contain_only_aligned_retrieval_segments() -> None:
+def test_live_chroma_contains_only_aligned_retrieval_segments() -> None:
     segments = json.loads((settings.indexes_dir / "retrieval_segments.json").read_text())
     segment_ids = {segment["segment_id"] for segment in segments}
-    with (settings.indexes_dir / "bm25.pkl").open("rb") as handle:
-        bm25_ids = set(pickle.load(handle)["segment_ids"])
     collection = chromadb.PersistentClient(path=str(settings.chroma_dir)).get_collection(
         CHROMA_COLLECTION
     )
     chroma = collection.get(include=["metadatas"])
 
-    assert segment_ids == bm25_ids == set(chroma["ids"])
+    assert segment_ids == set(chroma["ids"])
     assert all(segment_id.startswith("s_") for segment_id in segment_ids)
     assert all(
         metadata.get("segment_id") in segment_ids and metadata.get("evidence_id")
@@ -123,7 +120,7 @@ def test_live_chroma_and_bm25_contain_only_aligned_retrieval_segments() -> None:
     )
 
 
-def test_planner_and_grader_policies_exclude_answer_model_and_diagram_models_are_fixed() -> None:
+def test_planner_and_grader_primaries_are_lightweight_and_diagram_models_are_fixed() -> None:
     answer_models = {
         llm.ROLE_DEFAULTS["answer"].primary_model,
         llm.ROLE_DEFAULTS["answer"].fallback_model,
@@ -131,7 +128,8 @@ def test_planner_and_grader_policies_exclude_answer_model_and_diagram_models_are
     for role in ("planner", "grader"):
         policy = llm.ROLE_DEFAULTS[role]
         assert policy.primary_model not in answer_models
-        assert policy.fallback_model not in answer_models
+        assert policy.fallback_model
+        assert policy.fallback_model != policy.primary_model
     assert llm.ROLE_DEFAULTS["diagram"].primary_model == "openai/gpt-oss-20b"
     assert llm.ROLE_DEFAULTS["diagram"].fallback_model == "openai/gpt-oss-120b"
     assert 'task="planner"' in getsource(nodes.aunderstand_question)
@@ -165,7 +163,7 @@ def test_grader_429_retries_once_then_uses_grader_fallback(monkeypatch) -> None:
         assert role == "grader"
         return RoleConfig(
             "openai/gpt-oss-20b",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-120b",
             0,
             100,
             10,
@@ -181,12 +179,12 @@ def test_grader_429_retries_once_then_uses_grader_fallback(monkeypatch) -> None:
     assert calls == [
         ("grader", "openai/gpt-oss-20b"),
         ("grader", "openai/gpt-oss-20b"),
-        ("grader", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        ("grader", "openai/gpt-oss-120b"),
     ]
     assert options == [
         {"method": "json_schema", "strict": True},
         {"method": "json_schema", "strict": True},
-        {"method": "json_schema", "strict": False},
+        {"method": "json_schema", "strict": True},
     ]
 
 
@@ -235,3 +233,21 @@ def test_schema_mismatch_requires_explicit_reingestion_without_deleting(tmp_path
         _require_index_schema(config)
 
     assert marker.read_bytes() == b"keep"
+
+
+def test_compatible_stored_schema_remains_readable_before_pipeline_reingestion(
+    tmp_path: Path,
+) -> None:
+    indexes = tmp_path / "indexes"
+    indexes.mkdir()
+    (indexes / "manifest.json").write_text(
+        '{"version": 8, "ingestion_pipeline_version": "text-only-pymupdf-hierarchical-v8.0"}',
+        encoding="utf-8",
+    )
+    config = Settings(
+        groq_api_key="test",
+        indexes_dir=indexes,
+        chroma_dir=indexes / "chroma",
+    )
+
+    _require_index_schema(config)

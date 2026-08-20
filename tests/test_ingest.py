@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import fitz
@@ -42,6 +43,172 @@ def build(group: SectionGroup):
 
 def test_clean_removes_long_table_of_contents_leaders() -> None:
     assert ingest._clean("3.7 Configuring Reasons........................................89") == "3.7 Configuring Reasons 89"
+
+
+def _page_dict(*blocks: tuple[str, tuple[float, float, float, float]]) -> dict:
+    return {
+        "blocks": [
+            {
+                "type": 0,
+                "bbox": bbox,
+                "lines": [
+                    {
+                        "spans": [
+                            {"text": text, "size": 10.0, "font": "Arial"}
+                        ]
+                    }
+                ],
+            }
+            for text, bbox in blocks
+        ]
+    }
+
+
+class _FakeRect:
+    width = 600.0
+    height = 800.0
+
+
+class _FakeOcrPage:
+    rect = _FakeRect()
+
+    def __init__(self, native: dict, tesseract: dict) -> None:
+        self.native = native
+        self.tesseract = tesseract
+        self.ocr_calls = 0
+
+    def get_text(self, _kind, **kwargs):
+        return self.tesseract if kwargs.get("textpage") is not None else self.native
+
+    def get_textpage_ocr(self, **_kwargs):
+        self.ocr_calls += 1
+        return object()
+
+
+def test_page_extraction_keeps_usable_native_text_without_ocr() -> None:
+    page = _FakeOcrPage(
+        _page_dict(("Native manual text is already accurate and searchable.", (20, 20, 500, 80))),
+        _page_dict(("OCR should not run", (20, 20, 500, 80))),
+    )
+
+    result = ingest._extract_page_content(page, Settings(groq_api_key="test"))
+
+    assert result.method == "native"
+    assert result.blocks[0].text.startswith("Native manual text")
+    assert page.ocr_calls == 0
+
+
+def test_page_extraction_uses_tesseract_for_scanned_page() -> None:
+    page = _FakeOcrPage(
+        _page_dict(),
+        _page_dict(("Recognized scanned procedure with enough useful text.", (20, 20, 500, 80))),
+    )
+
+    result = ingest._extract_page_content(
+        page,
+        Settings(groq_api_key="test", paddle_ocr_enabled=False),
+    )
+
+    assert result.method == "tesseract"
+    assert result.blocks[0].text.startswith("Recognized scanned procedure")
+    assert page.ocr_calls == 1
+
+
+def test_complex_tesseract_layout_uses_paddle_structure(monkeypatch) -> None:
+    tesseract_blocks = []
+    for row in range(4):
+        top = 100.0 + row * 60
+        tesseract_blocks.extend(
+            [
+                (f"Left {row}", (20, top, 260, top + 30)),
+                (f"Right {row}", (340, top, 580, top + 30)),
+            ]
+        )
+    page = _FakeOcrPage(_page_dict(), _page_dict(*tesseract_blocks))
+    expected_blocks, expected_tables = ingest._paddle_markdown_to_content(
+        "# Resource fields\n\n| Field | Description |\n| --- | --- |\n| Name | Resource name |",
+        600.0,
+        800.0,
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_extract_with_paddle",
+        lambda _page, _config: (expected_blocks, expected_tables),
+    )
+
+    result = ingest._extract_page_content(page, Settings(groq_api_key="test"))
+
+    assert result.method == "paddle_structure"
+    assert result.tables[0].extract() == [
+        ["Field", "Description"],
+        ["Name", "Resource name"],
+    ]
+
+
+def test_paddle_markdown_preserves_text_and_structured_tables() -> None:
+    blocks, tables = ingest._paddle_markdown_to_content(
+        "# Configure resources\n\nSelect the resource.\n\n"
+        "| Field | Description |\n| --- | --- |\n| Name | Resource name |",
+        600.0,
+        800.0,
+    )
+
+    assert [block.text for block in blocks] == [
+        "Configure resources",
+        "Select the resource.",
+    ]
+    assert blocks[0].bold is True
+    assert tables[0].extract() == [
+        ["Field", "Description"],
+        ["Name", "Resource name"],
+    ]
+
+
+def test_ingestion_audit_reports_each_extraction_method() -> None:
+    pages = [
+        ingest.PageData(1, "1", 600, 800, [], extraction_method="native"),
+        ingest.PageData(2, "2", 600, 800, [], extraction_method="tesseract"),
+        ingest.PageData(3, "3", 600, 800, [], extraction_method="paddle_structure"),
+        ingest.PageData(
+            4,
+            "4",
+            600,
+            800,
+            [],
+            extraction_method="ocr_failed",
+            extraction_error="Tesseract data unavailable",
+        ),
+    ]
+
+    audit = _new_ingestion_audit(Path("manual.pdf"), "Manual", pages)
+
+    assert audit["native_text_pages"] == 1
+    assert audit["tesseract_ocr_pages"] == 1
+    assert audit["paddle_structure_pages"] == 1
+    assert audit["ocr_failed_pages"] == 1
+    assert "page 4" in audit["warnings"][0]
+
+
+def test_paddle_table_counts_as_successfully_extracted_page() -> None:
+    page = ingest.PageData(
+        1,
+        "1",
+        600,
+        800,
+        [],
+        ocr_tables=[
+            ingest.OcrTable(
+                (20, 100, 580, 300),
+                [["Field", "Description"], ["Name", "Resource name"]],
+            )
+        ],
+        extraction_method="paddle_structure",
+    )
+
+    audit = _new_ingestion_audit(Path("manual.pdf"), "Manual", [page])
+
+    assert audit["pages_with_text"] == 1
+    assert audit["image_only_or_low_text_pages"] == 0
 
 
 def test_evidence_unit_preserves_metadata_and_ordered_procedure_steps() -> None:
@@ -560,7 +727,6 @@ def test_unchanged_hash_reuses_both_levels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for name in (
-        "BM25_INDEX_PATH",
         "EVIDENCE_UNITS_PATH",
         "RETRIEVAL_SEGMENTS_PATH",
         "SEARCH_REPRESENTATIONS_PATH",
@@ -645,7 +811,7 @@ def test_unchanged_hash_reuses_both_levels(
 
     assert calls == 2
     assert third["processed"] == ["manual.pdf"]
-    assert third["version"] == 8
+    assert third["version"] == ingest.INDEX_SCHEMA_VERSION
     assert third["ingestion_pipeline_version"] == INGESTION_PIPELINE_VERSION
     audit = ingest._load_json(config.ingestion_audit_path, {})
     assert audit["schema_version"] == ingest.INDEX_SCHEMA_VERSION
@@ -744,6 +910,98 @@ def test_search_representation_rejects_missing_parent() -> None:
             ],
             set(),
         )
+
+
+def test_validate_indexes_accepts_matching_json_and_chroma_ids(tmp_path: Path) -> None:
+    """Catch startup validation using an undefined BM25 ID collection."""
+    config = Settings(
+        groq_api_key="gsk_test",
+        indexes_dir=tmp_path,
+        chroma_dir=tmp_path / "chroma",
+        chroma_mode="local",
+    )
+    source = {
+        "manual": "Designer Guide",
+        "source_file": "designer.pdf",
+        "chapter": "Resources",
+        "section": "Creating a Resource",
+        "pdf_page": 12,
+    }
+    config.evidence_units_path.write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "evidence-1",
+                    "text": "Create the resource.",
+                    "content_type": "procedure",
+                    "metadata": source,
+                    "token_count": 4,
+                    "structured_table": None,
+                    "procedure_steps": ["Create the resource."],
+                    "annotations": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config.retrieval_segments_path.write_text(
+        json.dumps(
+            [
+                {
+                    "segment_id": "segment-1",
+                    "evidence_id": "evidence-1",
+                    "searchable_text": "Create the resource.",
+                    "content_type": "procedure",
+                    "metadata": source,
+                    "segment_index": 0,
+                    "previous_segment_id": None,
+                    "next_segment_id": None,
+                    "word_count": 3,
+                    "embedding_token_count": 4,
+                    "effective_embedding_limit": 512,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config.search_representations_path.write_text(
+        json.dumps(
+            [
+                {
+                    "representation_id": "representation-1",
+                    "evidence_id": "evidence-1",
+                    "representation_type": "procedure_title",
+                    "text": "Procedure: Creating a Resource",
+                    "metadata": source,
+                    "embedding_token_count": 5,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class Collection:
+        def __init__(self, ids: list[str]) -> None:
+            self.ids = ids
+
+        def get(self, *, include: list[str]) -> dict[str, list[str]]:
+            assert include == []
+            return {"ids": self.ids}
+
+    class Client:
+        def get_collection(self, name: str) -> Collection:
+            ids = (
+                ["representation-1"]
+                if name == ingest.REPRESENTATION_COLLECTION
+                else ["segment-1"]
+            )
+            return Collection(ids)
+
+    assert ingest.validate_indexes(
+        config,
+        require_schema=False,
+        chroma_client=Client(),
+    ) == 1
 
 
 def test_search_representations_remove_global_exact_vector_duplicates() -> None:

@@ -61,9 +61,9 @@ class RoleConfig:
 
 
 ROLE_DEFAULTS: dict[GroqRole, RoleConfig] = {
-    "planner": RoleConfig("openai/gpt-oss-20b", "meta-llama/llama-4-scout-17b-16e-instruct", 0.0, 1024, 30, True),
+    "planner": RoleConfig("openai/gpt-oss-20b", "openai/gpt-oss-120b", 0.0, 1024, 30, True),
     "query_broadening": RoleConfig("openai/gpt-oss-20b", "", 0.1, 512, 20, False),
-    "grader": RoleConfig("openai/gpt-oss-20b", "meta-llama/llama-4-scout-17b-16e-instruct", 0.0, 1024, 40, True),
+    "grader": RoleConfig("openai/gpt-oss-20b", "openai/gpt-oss-120b", 0.0, 1024, 40, True),
     "answer": RoleConfig("openai/gpt-oss-120b", "qwen/qwen3.6-27b", 0.1, 4096, 90, False),
     "verifier": RoleConfig("qwen/qwen3.6-27b", "openai/gpt-oss-20b", 0.0, 4096, 60, False),
     "diagram": RoleConfig("openai/gpt-oss-20b", "openai/gpt-oss-120b", 0.0, 2048, 30, False),

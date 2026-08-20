@@ -1,4 +1,4 @@
-"""Deterministic, text-only ingestion for Opcenter PDF manuals."""
+"""Deterministic, structure-aware ingestion for Opcenter PDF manuals."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import json
 import logging
 import math
 from pathlib import Path
-import pickle
 import re
 import shutil
 from statistics import median
@@ -80,7 +79,7 @@ EMBEDDING_SAFETY_MARGIN = 8
 CHROMA_COLLECTION = "opcenter_manuals"
 REPRESENTATION_COLLECTION = "opcenter_manual_representations"
 INDEX_SCHEMA_VERSION = 8
-INGESTION_PIPELINE_VERSION = "text-only-pymupdf-hierarchical-v8.0"
+INGESTION_PIPELINE_VERSION = "hybrid-pymupdf-tesseract-paddle-hierarchical-v1.0"
 REINGEST_COMMAND = "python -m src.ingest"
 logger = logging.getLogger(__name__)
 
@@ -100,12 +99,10 @@ def _validate_parser(config: Settings) -> None:
 def _require_index_schema(config: Settings) -> None:
     manifest = _load_json(config.indexes_dir / "manifest.json", {})
     version = manifest.get("version") if isinstance(manifest, dict) else None
-    pipeline_version = manifest.get("ingestion_pipeline_version") if isinstance(manifest, dict) else None
-    if version != INDEX_SCHEMA_VERSION or pipeline_version != INGESTION_PIPELINE_VERSION:
+    if version != INDEX_SCHEMA_VERSION:
         raise IndexSchemaMismatchError(
-            "Index schema or ingestion pipeline changed "
-            f"(found schema={version or 'none'}, pipeline={pipeline_version or 'none'}; "
-            f"required schema={INDEX_SCHEMA_VERSION}, pipeline={INGESTION_PIPELINE_VERSION}). "
+            "Index schema changed "
+            f"(found schema={version or 'none'}; required schema={INDEX_SCHEMA_VERSION}). "
             f"Existing indexes were not modified. Run `{REINGEST_COMMAND}` explicitly."
         )
 
@@ -119,6 +116,23 @@ class TextBlock:
 
 
 @dataclass(slots=True)
+class OcrTable:
+    bbox: tuple[float, float, float, float]
+    rows: list[list[str]]
+
+    def extract(self) -> list[list[str]]:
+        return self.rows
+
+
+@dataclass(slots=True)
+class PageExtraction:
+    blocks: list[TextBlock]
+    tables: list[OcrTable]
+    method: Literal["native", "tesseract", "paddle_structure", "ocr_failed"]
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class PageData:
     pdf_page: int
     printed_page: str | None
@@ -126,6 +140,11 @@ class PageData:
     height: float
     blocks: list[TextBlock]
     is_toc: bool = False
+    ocr_tables: list[OcrTable] = field(default_factory=list)
+    extraction_method: Literal[
+        "native", "tesseract", "paddle_structure", "ocr_failed"
+    ] = "native"
+    extraction_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -183,40 +202,211 @@ def _normalized_margin_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def _extract_page_data(doc: fitz.Document) -> tuple[list[PageData], set[str], float]:
+def _blocks_from_page_dict(page_dict: dict[str, Any]) -> list[TextBlock]:
+    blocks: list[TextBlock] = []
+    for raw_block in page_dict.get("blocks", []):
+        if raw_block.get("type") != 0:
+            continue
+        lines: list[str] = []
+        sizes: list[float] = []
+        bold = False
+        for line in raw_block.get("lines", []):
+            spans = line.get("spans", [])
+            line_text = _clean("".join(str(span.get("text", "")) for span in spans))
+            if not line_text:
+                continue
+            lines.append(line_text)
+            sizes.extend(float(span.get("size", 0)) for span in spans if span.get("size"))
+            bold = bold or any("bold" in str(span.get("font", "")).lower() for span in spans)
+        text = "\n".join(lines)
+        if not text:
+            continue
+        bbox = tuple(float(value) for value in raw_block.get("bbox", (0, 0, 0, 0)))
+        blocks.append(
+            TextBlock(text=text, size=max(sizes, default=10.0), bbox=bbox, bold=bold)
+        )
+    return blocks
+
+
+def _useful_character_count(blocks: list[TextBlock]) -> int:
+    return sum(character.isalnum() for block in blocks for character in block.text)
+
+
+def _looks_complex_ocr_layout(blocks: list[TextBlock], page_width: float) -> bool:
+    if len(blocks) < 6 or page_width <= 0:
+        return False
+    left = [block for block in blocks if (block.bbox[0] + block.bbox[2]) / 2 < page_width * 0.45]
+    right = [block for block in blocks if (block.bbox[0] + block.bbox[2]) / 2 > page_width * 0.55]
+    if len(left) < 3 or len(right) < 3:
+        return False
+    aligned_rows = sum(
+        abs((left_block.bbox[1] + left_block.bbox[3]) / 2 - (right_block.bbox[1] + right_block.bbox[3]) / 2)
+        <= max(12.0, min(left_block.bbox[3] - left_block.bbox[1], right_block.bbox[3] - right_block.bbox[1]))
+        for left_block in left
+        for right_block in right
+    )
+    return aligned_rows >= 3
+
+
+def _markdown_cells(line: str) -> list[str]:
+    return [_clean(cell.replace("\\|", "|")) for cell in line.strip().strip("|").split("|")]
+
+
+def _paddle_markdown_to_content(
+    markdown: str, page_width: float, page_height: float
+) -> tuple[list[TextBlock], list[OcrTable]]:
+    lines = markdown.splitlines()
+    items: list[tuple[str, Any]] = []
+    paragraph: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            items.append(("text", _clean(" ".join(paragraph))))
+            paragraph.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            flush_paragraph()
+            index += 1
+            continue
+        if line.startswith("|") and index + 1 < len(lines):
+            separator = lines[index + 1].strip()
+            if separator.startswith("|") and all(
+                re.fullmatch(r":?-{3,}:?", cell.strip())
+                for cell in separator.strip("|").split("|")
+            ):
+                flush_paragraph()
+                table_lines = [line]
+                index += 2
+                while index < len(lines) and lines[index].strip().startswith("|"):
+                    table_lines.append(lines[index].strip())
+                    index += 1
+                items.append(("table", [_markdown_cells(value) for value in table_lines]))
+                continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            flush_paragraph()
+            items.append(("heading", _clean(heading.group(2))))
+        else:
+            paragraph.append(line)
+        index += 1
+    flush_paragraph()
+
+    blocks: list[TextBlock] = []
+    tables: list[OcrTable] = []
+    height_step = page_height / max(len(items) + 2, 3)
+    for position, (kind, value) in enumerate(items, start=1):
+        top = height_step * position
+        bbox = (page_width * 0.05, top, page_width * 0.95, min(page_height, top + height_step * 0.8))
+        if kind == "table":
+            tables.append(OcrTable(bbox=bbox, rows=value))
+        else:
+            blocks.append(
+                TextBlock(
+                    text=value,
+                    size=14.0 if kind == "heading" else 10.0,
+                    bbox=bbox,
+                    bold=kind == "heading",
+                )
+            )
+    return blocks, tables
+
+
+def _paddle_markdown(result: Any) -> str:
+    value = getattr(result, "markdown", "")
+    if isinstance(value, dict):
+        value = value.get("markdown_texts", "")
+    if isinstance(value, (list, tuple)):
+        return "\n\n".join(str(item) for item in value)
+    return str(value or "")
+
+
+@lru_cache(maxsize=2)
+def _paddle_pipeline(device: str):
+    from paddleocr import PPStructureV3
+
+    return PPStructureV3(device=device, use_formula_recognition=False)
+
+
+def _extract_with_paddle(
+    page: fitz.Page, config: Settings
+) -> tuple[list[TextBlock], list[OcrTable]]:
+    import numpy as np
+
+    scale = config.ocr_dpi / 72
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+    image = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
+        pixmap.height, pixmap.width, pixmap.n
+    )
+    results = list(_paddle_pipeline(config.paddle_ocr_device).predict(image))
+    markdown = "\n\n".join(_paddle_markdown(result) for result in results).strip()
+    if not markdown:
+        raise RuntimeError("PP-StructureV3 returned no structured content")
+    return _paddle_markdown_to_content(markdown, float(page.rect.width), float(page.rect.height))
+
+
+def _extract_page_content(page: fitz.Page, config: Settings) -> PageExtraction:
+    native_dict = page.get_text("dict", sort=True, flags=fitz.TEXTFLAGS_TEXT)
+    native_blocks = _blocks_from_page_dict(native_dict)
+    if not config.ocr_enabled or _useful_character_count(native_blocks) >= config.ocr_min_native_chars:
+        return PageExtraction(native_blocks, [], "native")
+
+    tesseract_blocks: list[TextBlock] = []
+    errors: list[str] = []
+    try:
+        kwargs: dict[str, Any] = {
+            "language": config.ocr_language,
+            "dpi": config.ocr_dpi,
+            "full": True,
+        }
+        if config.tessdata_prefix:
+            kwargs["tessdata"] = config.tessdata_prefix
+        text_page = page.get_textpage_ocr(**kwargs)
+        tesseract_dict = page.get_text(
+            "dict", sort=True, flags=fitz.TEXTFLAGS_TEXT, textpage=text_page
+        )
+        tesseract_blocks = _blocks_from_page_dict(tesseract_dict)
+    except Exception as exc:
+        errors.append(f"Tesseract OCR failed: {exc}")
+
+    use_paddle = config.paddle_ocr_enabled and (
+        _useful_character_count(tesseract_blocks) < config.ocr_min_native_chars
+        or _looks_complex_ocr_layout(tesseract_blocks, float(page.rect.width))
+    )
+    if use_paddle:
+        try:
+            blocks, tables = _extract_with_paddle(page, config)
+            if blocks or tables:
+                return PageExtraction(blocks, tables, "paddle_structure", "; ".join(errors) or None)
+        except Exception as exc:
+            errors.append(f"PP-StructureV3 failed: {exc}")
+
+    if tesseract_blocks:
+        return PageExtraction(tesseract_blocks, [], "tesseract", "; ".join(errors) or None)
+    return PageExtraction(native_blocks, [], "ocr_failed", "; ".join(errors) or "OCR returned no text")
+
+
+def _extract_page_data(
+    doc: fitz.Document, config: Settings = settings
+) -> tuple[list[PageData], set[str], float]:
     pages: list[PageData] = []
     margin_counts: Counter[str] = Counter()
     body_sizes: list[float] = []
 
     for pdf_page, page in enumerate(doc, start=1):
-        blocks: list[TextBlock] = []
-        page_dict = page.get_text("dict", sort=True, flags=fitz.TEXTFLAGS_TEXT)
-        for raw_block in page_dict.get("blocks", []):
-            if raw_block.get("type") != 0:
-                continue
-            lines: list[str] = []
-            sizes: list[float] = []
-            bold = False
-            for line in raw_block.get("lines", []):
-                spans = line.get("spans", [])
-                line_text = _clean("".join(str(span.get("text", "")) for span in spans))
-                if not line_text:
-                    continue
-                lines.append(line_text)
-                sizes.extend(float(span.get("size", 0)) for span in spans if span.get("size"))
-                bold = bold or any(
-                    "bold" in str(span.get("font", "")).lower() for span in spans
-                )
-            text = "\n".join(lines)
-            if not text:
-                continue
-            bbox = tuple(float(value) for value in raw_block.get("bbox", (0, 0, 0, 0)))
-            size = max(sizes, default=10.0)
-            blocks.append(TextBlock(text=text, size=size, bbox=bbox, bold=bold))
+        extraction = _extract_page_content(page, config)
+        blocks = extraction.blocks
+        for block in blocks:
+            sizes = [block.size]
+            bbox = block.bbox
             if bbox[1] > page.rect.height * 0.08 and bbox[3] < page.rect.height * 0.9:
                 body_sizes.extend(value for value in sizes if 7 <= value <= 14)
-            if bbox[3] <= page.rect.height * 0.1 or bbox[1] >= page.rect.height * 0.9:
-                margin_counts[_normalized_margin_text(text)] += 1
+            if extraction.method == "native" and (
+                bbox[3] <= page.rect.height * 0.1 or bbox[1] >= page.rect.height * 0.9
+            ):
+                margin_counts[_normalized_margin_text(block.text)] += 1
 
         printed_page = _printed_page(page, blocks)
         pages.append(
@@ -227,6 +417,9 @@ def _extract_page_data(doc: fitz.Document) -> tuple[list[PageData], set[str], fl
                 height=float(page.rect.height),
                 blocks=blocks,
                 is_toc=_is_toc_page(blocks),
+                ocr_tables=extraction.tables,
+                extraction_method=extraction.method,
+                extraction_error=extraction.error,
             )
         )
 
@@ -490,6 +683,7 @@ def _extract_groups(
             tables = page.find_tables().tables
         except Exception:
             tables = []
+        tables = [*tables, *page_data.ocr_tables]
         accepted_tables: list[tuple[Any, list[Element]]] = []
         if audit is not None:
             audit["tables_detected"] += len(tables)
@@ -605,26 +799,32 @@ def _image_only_caption(text: str) -> bool:
 
 
 @lru_cache(maxsize=2)
-def _embedding_tokenizer(model_name: str):
+def _embedding_tokenizer(model_name: str, revision: str):
     from transformers import AutoTokenizer
 
-    return AutoTokenizer.from_pretrained(model_name)
+    return AutoTokenizer.from_pretrained(
+        model_name, revision=revision, trust_remote_code=False
+    )
 
 
 def _embedding_token_count(text: str, config: Settings = settings) -> int:
-    tokenizer = _embedding_tokenizer(config.embedding_model)
+    tokenizer = _embedding_tokenizer(
+        config.embedding_model, config.embedding_model_revision
+    )
     return len(tokenizer.encode(text, add_special_tokens=True, truncation=False))
 
 
 @lru_cache(maxsize=4)
-def _model_sequence_limit(model_name: str) -> int:
+def _model_sequence_limit(model_name: str, revision: str) -> int:
     """Read the SentenceTransformers limit without loading the embedding model."""
-    tokenizer = _embedding_tokenizer(model_name)
+    tokenizer = _embedding_tokenizer(model_name, revision)
     limits = [int(tokenizer.model_max_length)]
     try:
         from huggingface_hub import hf_hub_download
 
-        path = hf_hub_download(model_name, "sentence_bert_config.json")
+        path = hf_hub_download(
+            model_name, "sentence_bert_config.json", revision=revision
+        )
         model_config = json.loads(Path(path).read_text(encoding="utf-8"))
         limits.append(int(model_config["max_seq_length"]))
     except (KeyError, OSError, TypeError, ValueError):
@@ -638,7 +838,9 @@ def _model_sequence_limit(model_name: str) -> int:
 
 
 def _effective_embedding_limit(config: Settings = settings) -> int:
-    measured = _model_sequence_limit(config.embedding_model)
+    measured = _model_sequence_limit(
+        config.embedding_model, config.embedding_model_revision
+    )
     return max(16, min(measured, config.embedding_safety_limit) - EMBEDDING_SAFETY_MARGIN)
 
 
@@ -1092,13 +1294,35 @@ def _build_evidence(
 def _new_ingestion_audit(
     pdf_path: Path, manual: str, pages: list[PageData]
 ) -> dict[str, Any]:
-    text_sizes = [sum(len(block.text.strip()) for block in page.blocks) for page in pages]
+    text_sizes = [
+        sum(len(block.text.strip()) for block in page.blocks)
+        + sum(
+            len(cell.strip())
+            for table in page.ocr_tables
+            for row in table.rows
+            for cell in row
+        )
+        for page in pages
+    ]
+    extraction_counts = Counter(page.extraction_method for page in pages)
+    ocr_warnings = [
+        f"OCR warning on page {page.pdf_page}: {page.extraction_error}"
+        for page in pages
+        if page.extraction_error
+    ]
     return {
         "manual": manual,
         "source_file": pdf_path.name,
         "total_pages": len(pages),
         "pages_with_text": sum(size > 0 for size in text_sizes),
-        "image_only_or_low_text_pages": sum(size < 40 for size in text_sizes),
+        "image_only_or_low_text_pages": sum(
+            size < 40 and not page.ocr_tables
+            for page, size in zip(pages, text_sizes, strict=True)
+        ),
+        "native_text_pages": extraction_counts["native"],
+        "tesseract_ocr_pages": extraction_counts["tesseract"],
+        "paddle_structure_pages": extraction_counts["paddle_structure"],
+        "ocr_failed_pages": extraction_counts["ocr_failed"],
         "text_blocks_extracted": sum(len(page.blocks) for page in pages),
         "text_blocks_indexed": 0,
         "headings_detected": 0,
@@ -1122,7 +1346,7 @@ def _new_ingestion_audit(
         "maximum_segment_size_words": 0,
         "average_segment_size_words": 0.0,
         "maximum_embedding_token_count": 0,
-        "warnings": [],
+        "warnings": ocr_warnings,
     }
 
 
@@ -1208,7 +1432,7 @@ def _ingest_pdf(
         metadata = doc.metadata or {}
         manual = _clean(metadata.get("title")) or pdf_path.stem
         release = _clean(metadata.get("subject"))
-        pages, repeated, body_size = _extract_page_data(doc)
+        pages, repeated, body_size = _extract_page_data(doc, config)
         audit = _new_ingestion_audit(pdf_path, manual, pages)
         groups = _extract_groups(doc, pages, repeated, body_size, manual, audit)
         evidence_units, retrieval_segments = _build_evidence(
@@ -1737,9 +1961,8 @@ def build_indexes(
     *,
     representations: list[SearchRepresentation] | None = None,
 ) -> int:
-    """Rebuild body Chroma, representation Chroma, and BM25 indexes."""
+    """Rebuild body and representation Chroma indexes."""
     from langchain_chroma import Chroma
-    from rank_bm25 import BM25Okapi
 
     from src.embeddings import create_embedding_model
 
@@ -1811,14 +2034,6 @@ def build_indexes(
             ids=representation_ids[start:end],
         )
 
-    tokenized = [_bm25_tokens(text) for text in texts]
-    bm25_payload = {"bm25": BM25Okapi(tokenized), "segment_ids": ids}
-    bm25_path = config.bm25_path
-    temporary = bm25_path.with_suffix(".pkl.tmp")
-    with temporary.open("wb") as handle:
-        pickle.dump(bm25_payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    temporary.replace(bm25_path)
-
     for manual, count in sorted(
         Counter(segment["metadata"]["manual"] for segment in segments).items()
     ):
@@ -1847,19 +2062,13 @@ def validate_indexes(
     raw_segments = _load_json(config.retrieval_segments_path, [])
     segments = _indexable_segments(raw_segments if isinstance(raw_segments, list) else [])
     segment_ids = [str(segment["segment_id"]) for segment in segments]
+    bm25_ids = list(segment_ids)
     raw_representations = _load_json(config.search_representations_path, [])
     representations = _indexable_representations(
         raw_representations if isinstance(raw_representations, list) else [],
         evidence_ids,
     )
     representation_ids = [item["representation_id"] for item in representations]
-
-    bm25_path = config.bm25_path
-    if not bm25_path.exists():
-        raise FileNotFoundError(f"BM25 index not found: {bm25_path}")
-    with bm25_path.open("rb") as handle:
-        payload = pickle.load(handle)
-    bm25_ids = list(payload.get("segment_ids", []))
 
     client = chroma_client or (
         chromadb.PersistentClient(path=str(config.chroma_dir))
@@ -1881,7 +2090,7 @@ def validate_indexes(
         raise ValueError("Chroma contains duplicate retrieval segment IDs")
     if len(chroma_representation_ids) != len(set(chroma_representation_ids)):
         raise ValueError("Chroma contains duplicate search representation IDs")
-    if set(segment_ids) != set(bm25_ids) or set(segment_ids) != set(chroma_ids):
+    if set(segment_ids) != set(chroma_ids):
         raise ValueError(
             "Index ID mismatch: "
             f"retrieval_segments.json={len(segment_ids)}, "
@@ -2032,8 +2241,7 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         except Exception:
             chroma_indexes_exist = False
     index_artifacts_exist = (
-        config.bm25_path.exists()
-        and chroma_indexes_exist
+        chroma_indexes_exist
         and config.heading_index_path.exists()
         and config.concept_index_path.exists()
         and config.ingestion_audit_path.exists()

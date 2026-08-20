@@ -39,5 +39,8 @@ class RedisRequestStore:
             f"opcenter:chat:request:{request_id}", payload, ex=self.request_ttl
         )
 
+    async def get_request(self, request_id: str) -> str | None:
+        return await self.client.get(f"opcenter:chat:request:{request_id}")
+
     async def pop_request(self, request_id: str) -> str | None:
         return await self.client.getdel(f"opcenter:chat:request:{request_id}")
