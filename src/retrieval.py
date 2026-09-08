@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 import json
@@ -23,6 +26,7 @@ from src.ingest import (
     _require_index_schema,
 )
 from src.schemas import RetrievedDocument
+from src.retrieval_metrics import stage
 
 
 RRF_K = 60
@@ -33,6 +37,64 @@ CONCEPT_TOP_K = 8
 logger = logging.getLogger(__name__)
 _disabled_rerankers: set[str] = set()
 _chroma_client: Any | None = None
+_query_vectors = ContextVar('query_vectors', default=None)
+
+
+@contextmanager
+def query_embedding_scope():
+    """A bounded request/query scope, never a process-wide user-query cache."""
+    if _query_vectors.get() is not None:
+        yield
+        return
+    token = _query_vectors.set({})
+    try:
+        yield
+    finally:
+        _query_vectors.reset(token)
+
+
+def _query_embedding(query, resources, config):
+    vectors = _query_vectors.get() if config.reuse_query_embeddings else None
+    key = (id(resources.embedding_model), query)
+    if vectors is not None and key in vectors:
+        return vectors[key]
+    # Exact query text avoids merging differently preprocessed/cased inputs.
+    cache_key = {'query': query, 'model': config.embedding_model, 'revision': config.embedding_model_revision}
+    embedding = cache_get('embedding', cache_key)
+    if embedding is None:
+        with stage('embedding_ms'):
+            embedding = resources.embedding_model.embed_query(query)
+        cache_set('embedding', cache_key, embedding, ttl=3600)
+    if vectors is not None:
+        vectors[key] = embedding
+    return embedding
+
+
+@query_embedding_scope()
+def hybrid_search(query, *, config=settings):
+    """Sync worker boundary; pgvector branch itself awaits real async DB I/O."""
+    if not config.parallel_hybrid or config.vector_store != 'pgvector':
+        with stage('dense_ms'):
+            dense = vector_search(query, config.vector_top_k, config=config)
+        with stage('bm25_ms'):
+            lexical = bm25_search(query, config.bm25_top_k, config=config)
+        return dense, lexical, {'errors': {}}
+    from src.hybrid import run_branches
+    resources = load_resources(config)
+    embedding = _query_embedding(query, resources, config)
+    client = _configured_chroma_client(config)
+    async def dense():
+        with stage('dense_ms'):
+            rows = await client.repository.search(config.chroma_collection, embedding, min(config.vector_top_k, len(resources.segments_by_id)))
+        return [_result(resources.segments_by_id[row['id']], {'vector_rank': float(rank), 'vector_distance': float(row['distance'])})
+                for rank, row in enumerate(rows, 1)]
+    async def lexical():
+        with stage('bm25_ms'):
+            return await asyncio.to_thread(bm25_search, query, config.bm25_top_k, config=config)
+    with stage('hybrid_wall_ms'):
+        results = client.call(run_branches(dense, lexical, config.dense_timeout, config.bm25_timeout))
+    logger.info('hybrid_retrieval', extra={'retrieval_timings': results[2]})
+    return results
 STOPWORDS = {
     "a", "an", "and", "are", "for", "how", "in", "is", "of", "the", "to", "what", "with"
 }
@@ -77,6 +139,8 @@ def configure_chroma_client(client: Any | None) -> None:
 def _configured_chroma_client(config: Settings) -> Any:
     if _chroma_client is not None:
         return _chroma_client
+    if config.vector_store == "pgvector":
+        raise RuntimeError("pgvector requires application startup or a standalone_client context")
     if config.chroma_mode == "local":
         return create_chroma_client(config)
     raise RuntimeError("Chroma HTTP client has not been initialized")
@@ -250,11 +314,7 @@ def vector_search(
         return []
     resources = load_resources(config)
     limit = top_k or config.vector_top_k
-    embedding_key = {"query": normalized(query), "model": config.embedding_model}
-    embedding = cache_get("embedding", embedding_key)
-    if embedding is None:
-        embedding = resources.embedding_model.embed_query(query)
-        cache_set("embedding", embedding_key, embedding, ttl=3600)
+    embedding = _query_embedding(query, resources, config)
     response = resources.chroma_collection.query(
         query_embeddings=[embedding],
         n_results=min(limit, len(resources.segments_by_id)),
@@ -293,7 +353,7 @@ def representation_search(
             return []
         where = {"manual": {"$in": manuals}}
     response = resources.representation_collection.query(
-        query_embeddings=[resources.embedding_model.embed_query(query)],
+        query_embeddings=[_query_embedding(query, resources, config)],
         n_results=min(limit, len(resources.representations_by_id)),
         where=where,
         include=["distances"],
@@ -367,7 +427,7 @@ def heading_search(
             ranked.append((2 if exact else 1, 1.0 if exact else fuzzy, heading))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     if not ranked or (ranked[0][0] < 2 and ranked[0][1] < 0.65):
-        ranked = _semantic_heading_matches(query, resources, preferred_manuals, ranked)
+        ranked = _semantic_heading_matches(query, resources, preferred_manuals, ranked, config)
     results = _linked_results(
         ranked,
         top_k,
@@ -680,13 +740,14 @@ def _semantic_heading_matches(
     resources: RetrievalResources,
     preferred_manuals: Sequence[str],
     existing: list[tuple[int, float, dict[str, Any]]],
+    config: Settings = settings,
 ) -> list[tuple[int, float, dict[str, Any]]]:
     headings = [heading for heading in resources.headings if not heading.get("is_toc")]
     if resources.heading_embeddings is None:
         resources.heading_embeddings = resources.embedding_model.embed_documents(
             [str(heading.get("original_heading", "")) for heading in headings]
         )
-    query_vector = resources.embedding_model.embed_query(query)
+    query_vector = _query_embedding(query, resources, config)
     semantic = [
         (0, sum(left * right for left, right in zip(query_vector, vector)), heading)
         for heading, vector in zip(headings, resources.heading_embeddings, strict=True)
@@ -823,6 +884,7 @@ def reciprocal_rank_fusion(
     return deduplicate_exact_results(fused)[: limit or config.fused_top_k]
 
 
+@query_embedding_scope()
 def retrieve_multiple_queries(
     standalone_query: str,
     search_queries: Sequence[str] | None = None,
@@ -845,6 +907,12 @@ def retrieve_multiple_queries(
         "question": normalized(standalone_query), "queries": [normalized(query) for query in queries],
         "entities": list(entities), "aliases": list(aliases), "manuals": list(preferred_manuals),
         "intent": intent, "index": _index_version(config),
+        "vector_store": config.vector_store,
+        "search_mode": config.pgvector_search_mode,
+        "hnsw_ef_search": config.hnsw_ef_search,
+        "parallel_hybrid": config.parallel_hybrid,
+        "reuse_query_embeddings": config.reuse_query_embeddings,
+        "embedding_identity": [config.embedding_model, config.embedding_model_revision],
         "config": [config.vector_top_k, config.bm25_top_k, config.fused_top_k, config.max_search_queries],
     }
     cached = cache_get("retrieval", cache_key)
@@ -886,6 +954,7 @@ def _index_version(config: Settings) -> str:
         return "unknown"
 
 
+@query_embedding_scope()
 def _retrieve_query_paths(
     query: str,
     *,
@@ -894,9 +963,9 @@ def _retrieve_query_paths(
     preferred_manuals: Sequence[str],
     config: Settings,
 ) -> list[RetrievedDocument]:
-    vector = vector_search(query, config.vector_top_k, config=config)
-    representations = representation_search(query, config.vector_top_k, config=config)
-    bm25 = bm25_search(query, config.bm25_top_k, config=config)
+    vector, bm25, timings = hybrid_search(query, config=config)
+    dense_failed = 'dense' in timings['errors']
+    representations = [] if dense_failed else representation_search(query, config.vector_top_k, config=config)
     headings = heading_search(query, config=config)
     concepts = concept_search(
         query,
@@ -904,14 +973,14 @@ def _retrieve_query_paths(
         aliases=aliases,
         config=config,
     )
-    preferred_vector = _preferred_vector_search(query, preferred_manuals, config)
+    preferred_vector = [] if dense_failed else _preferred_vector_search(query, preferred_manuals, config)
     preferred_representations = representation_search(
         query,
         PREFERRED_MANUAL_QUOTA,
         preferred_manuals=preferred_manuals,
         config=config,
-    ) if preferred_manuals else []
-    preferred_bm25 = _preferred_bm25_search(query, preferred_manuals, config)
+    ) if preferred_manuals and not dense_failed else []
+    preferred_bm25 = [] if 'bm25' in timings['errors'] else _preferred_bm25_search(query, preferred_manuals, config)
     preferred_headings = heading_search(
         query,
         top_k=PREFERRED_MANUAL_QUOTA,
@@ -973,7 +1042,7 @@ def _preferred_vector_search(
     results: list[RetrievedDocument] = []
     for manual in _matching_manual_names(resources, preferences):
         response = resources.chroma_collection.query(
-            query_embeddings=[resources.embedding_model.embed_query(query)],
+            query_embeddings=[_query_embedding(query, resources, config)],
             n_results=min(PREFERRED_MANUAL_QUOTA, len(resources.segments_by_id)),
             where={"manual": {"$eq": manual}},
             include=["distances"],
@@ -1060,7 +1129,7 @@ def _rank_fuse(
     fused: dict[str, RetrievedDocument] = {}
     totals: dict[str, float] = {}
     for results, weight in zip(result_lists, weights, strict=True):
-        for rank, result in enumerate(results, start=1):
+        for rank, result in enumerate(_deduplicate_by_id(results), start=1):
             chunk_id = result["chunk_id"]
             if chunk_id not in fused:
                 fused[chunk_id] = _copy_result(result)
@@ -1197,6 +1266,7 @@ def expand_context(
     return limit_candidates_per_evidence(_deduplicate_by_id(expanded))[:limit]
 
 
+@stage('rerank_ms')
 def rerank_documents(
     query: str,
     documents: list[RetrievedDocument],

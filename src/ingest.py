@@ -1983,6 +1983,9 @@ def build_indexes(
     )
     if not representation_records:
         raise ValueError("No SearchRepresentations are available for indexing")
+    if config.vector_store == "pgvector":
+        from src.pgvector_migrate import build_pgvector_indexes
+        return build_pgvector_indexes(segments, representation_records, config)
     ids = [str(segment["segment_id"]) for segment in segments]
     texts = [str(segment["searchable_text"]) for segment in segments]
     metadatas = [_chroma_metadata(segment) for segment in segments]
@@ -2050,6 +2053,11 @@ def validate_indexes(
 ) -> int:
     """Require Chroma, BM25, and retrieval_segments.json to share IDs."""
     import chromadb
+
+    if config.vector_store == "pgvector" and chroma_client is None:
+        from src.pgvector_migrate import storage_client
+        with storage_client(config) as client:
+            return validate_indexes(config, require_schema=require_schema, chroma_client=client)
 
     if require_schema:
         _require_index_schema(config)
@@ -2227,7 +2235,13 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
     )
     (config.indexes_dir / "chunks.json").unlink(missing_ok=True)
     chroma_indexes_exist = (config.chroma_dir / "chroma.sqlite3").exists()
-    if config.chroma_mode == "server":
+    if config.vector_store == "pgvector":
+        try:
+            validate_indexes(config, require_schema=False)
+            chroma_indexes_exist = True
+        except Exception:
+            chroma_indexes_exist = False
+    elif config.chroma_mode == "server":
         try:
             import chromadb
 
@@ -2279,6 +2293,9 @@ def ingest_manuals(config: Settings = settings) -> dict[str, Any]:
         "representation_chroma_collection": REPRESENTATION_COLLECTION,
     }
     _write_json(manifest_path, manifest, pretty=True)
+    if config.vector_store == "pgvector":
+        from src.pgvector_migrate import ingestion_summary
+        ingestion_summary(config)
     return manifest
 
 

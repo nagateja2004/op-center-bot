@@ -27,19 +27,29 @@ def _env_path(name: str, default: Path) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""), repr=False)
     deployment_environment: str = field(
         default_factory=lambda: os.getenv("DEPLOYMENT_ENVIRONMENT", "local").strip() or "local"
     )
     evaluation_api_token: str = field(
-        default_factory=lambda: os.getenv("EVALUATION_API_TOKEN", "").strip()
+        default_factory=lambda: os.getenv("EVALUATION_API_TOKEN", "").strip(), repr=False
     )
     checkpoint_backend: str = field(
         default_factory=lambda: os.getenv("CHECKPOINT_BACKEND", "postgres").strip().casefold()
     )
-    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "").strip())
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "").strip(), repr=False)
+    vector_store: str = field(default_factory=lambda: os.getenv("VECTOR_STORE", "chroma").strip().lower())
+    pgvector_search_mode: str = field(default_factory=lambda: os.getenv("PGVECTOR_SEARCH_MODE", "exact").strip().lower())
+    hnsw_ef_search: int = field(default_factory=lambda: _env_int("HNSW_EF_SEARCH", 40))
+    parallel_hybrid: bool = field(default_factory=lambda: _env_bool("PARALLEL_HYBRID"))
+    reuse_query_embeddings: bool = field(default_factory=lambda: _env_bool("REUSE_QUERY_EMBEDDINGS"))
+    dense_timeout: float = field(default_factory=lambda: float(os.getenv("DENSE_TIMEOUT", "10")))
+    bm25_timeout: float = field(default_factory=lambda: float(os.getenv("BM25_TIMEOUT", "10")))
+    db_pool_min_size: int = field(default_factory=lambda: _env_int("DB_POOL_MIN_SIZE", 1))
+    db_pool_max_size: int = field(default_factory=lambda: _env_int("DB_POOL_MAX_SIZE", 10))
+    db_pool_timeout: int = field(default_factory=lambda: _env_int("DB_POOL_TIMEOUT", 30))
     redis_url: str = field(
-        default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0").strip()
+        default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0").strip(), repr=False
     )
     groq_model_max_concurrency: int = field(
         default_factory=lambda: _env_int("GROQ_MODEL_MAX_CONCURRENCY", 4)
@@ -219,7 +229,15 @@ class Settings:
             )
         if self.checkpoint_backend not in {"postgres", "sqlite"}:
             raise EnvironmentError("CHECKPOINT_BACKEND must be 'postgres' or 'sqlite'.")
-        if self.checkpoint_backend == "postgres" and not self.database_url:
+        if self.vector_store not in {"chroma", "pgvector"}:
+            raise EnvironmentError("VECTOR_STORE must be chroma or pgvector")
+        if self.pgvector_search_mode not in {"exact", "hnsw"}:
+            raise ValueError("PGVECTOR_SEARCH_MODE must be exact or hnsw")
+        if not 1 <= self.hnsw_ef_search <= 1000 or not 0 < self.dense_timeout < self.db_pool_timeout or not 0 < self.bm25_timeout < self.db_pool_timeout:
+            raise ValueError("Invalid HNSW ef_search or branch timeouts (must be below DB_POOL_TIMEOUT)")
+        if not 0 <= self.db_pool_min_size <= self.db_pool_max_size or self.db_pool_max_size < 1 or self.db_pool_timeout <= 0:
+            raise ValueError("Invalid PostgreSQL pool sizes or timeout")
+        if (self.checkpoint_backend == "postgres" or self.vector_store == "pgvector") and not self.database_url:
             raise EnvironmentError("DATABASE_URL is required for PostgreSQL checkpoints.")
         if self.database_url and not self.database_url.startswith(("postgresql://", "postgres://")):
             raise EnvironmentError("DATABASE_URL must use a PostgreSQL connection URL.")
@@ -227,7 +245,7 @@ class Settings:
             raise EnvironmentError("REDIS_URL must use a Redis connection URL.")
         if self.chroma_mode not in {"server", "local"}:
             raise EnvironmentError("CHROMA_MODE must be 'server' or 'local'.")
-        if self.chroma_mode == "server" and not self.chroma_host:
+        if self.vector_store == "chroma" and self.chroma_mode == "server" and not self.chroma_host:
             raise EnvironmentError("CHROMA_HOST is required when CHROMA_MODE=server.")
         if not self.chroma_collection:
             raise EnvironmentError("CHROMA_COLLECTION is required.")

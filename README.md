@@ -2,8 +2,61 @@
 
 An asynchronous RAG chatbot grounded in indexed Opcenter PDF manuals.
 
+## Production review status — 2026-09-07
+
+**The final optimized architecture is not implemented or production-verified.**
+**This Mac now runs retrieval on PostgreSQL + pgvector.** Local `.env` selects
+`VECTOR_STORE=pgvector`; the code default remains `chroma` for compatibility.
+Native PostgreSQL 17.11 and pgvector 0.8.6 bypass the broken Docker daemon.
+All 36,842 body/representation records from eight manuals were imported and
+validated, and a live API answer retained its manual/page citation. Chroma data
+and its selector remain available for rollback. HNSW, parallel dense/BM25 retrieval
+and request-local embedding reuse are now implemented and quality-benchmarked.
+See [optimization configuration and rollback](docs/RETRIEVAL_OPTIMIZATIONS.md).
+
+See [local cutover and restart instructions](docs/LOCAL_PGVECTOR_CUTOVER.md).
+
+Latest matched six-round benchmark: optimized pgvector hybrid p50 **85.65 ms**
+versus exact pgvector **131.97 ms** (**35.10% reduction**), with equal Recall@5 and
+MRR on 44 labeled questions. Chroma was **80.30 ms**, so this is **not a speedup
+over Chroma**. These are local retrieval-only results, not LLM response times. See
+[measured results and reproduction commands](benchmarks/BENCHMARK_RESULTS.md).
+
+Current behavior and the intended architecture are documented separately in
+[FINAL_ARCHITECTURE.md](docs/FINAL_ARCHITECTURE.md), including review findings,
+test results, operational risks and the release checklist.
+
+Optimization suite: **331 passed, zero skipped**, including real SQL/HNSW tests,
+eight exact/optimized live retrieval checks, concurrency and embedding-reuse tests. The
+fresh local Chroma hybrid benchmark measured p50 **92.33 ms** and p95 **111.95 ms**
+at `k=5` (44 scored cases, one warm pass, simplified retrieval adapter, no LLM).
+These are not pgvector, production-load or end-to-end measurements.
+
+| Component | Implemented behavior |
+| --- | --- |
+| HNSW | Explicit L2 HNSW migration, bare-distance indexed ORDER BY, transaction-local ef_search and strict iterative scans. Exact-search rollback remains. Tested local ef_search=200; exact top-20 overlap 96.82%. |
+| Metadata filtering | Parameterized equality/`$in` in the repository; existing manual preferences in retrieval. No structured query-wide prefilter or relaxation policy yet. |
+| Parallel hybrid retrieval | Dense async PostgreSQL retrieval overlaps worker-thread BM25 with independent deadlines and partial-failure handling. Auxiliary retrieval paths and dependent ranking stages retain their order. |
+| RRF | Existing weighted reciprocal-rank fusion, `k=60`; repeated IDs within one list now contribute once. Dense/BM25/fused defaults remain 12/12/18. |
+| Reranking | Cached local cross-encoder, at most 20 candidates, existing per-aspect output limits and RRF-order failure fallback. |
+| Context | Neighbor expansion before reranking, JSON EvidenceUnit resolution after it, deterministic compression; compression exceptions now use bounded original text with citation metadata. PostgreSQL parent lookup is not connected to generation. |
+| Pooling | One async PostgreSQL pool per API process, shared with checkpoints; cleanup on normal shutdown, startup failure and startup cancellation. |
+| Benchmarking | Repeated five-variant benchmark, 50 cases/44 scored labels, exact/ANN overlap, actual EXPLAIN and reranker profiles. No production load or full-answer improvement claim. |
+
+Local offline retrieval benchmark (no LLM generation or paid API calls):
+
+```bash
+CHROMA_MODE=local VECTOR_STORE=chroma HF_HUB_OFFLINE=1 LANGSMITH_TRACING=false \
+  .venv/bin/python retrieval_benchmark.py --output-dir evaluation_results/local-review --k 5
+```
+
+The benchmark's hybrid adapter is a simplified dense+BM25+context+reranker path,
+not the complete production multi-aspect router with every auxiliary retrieval
+list. Its latency is retrieval-only. Do not describe these numbers as end-to-end
+request performance or as a pgvector improvement.
+
 The Streamlit frontend communicates only with a FastAPI backend. The backend
-runs the LangGraph workflow, hybrid Chroma/BM25 retrieval, reciprocal-rank
+runs the LangGraph workflow, hybrid pgvector (or rollback Chroma)/BM25 retrieval, reciprocal-rank
 fusion, cross-encoder reranking, evidence grading, citation validation, answer
 verification, and optional diagram generation.
 
@@ -12,6 +65,146 @@ No user account or authentication is required. Anonymous `session_id`,
 LangGraph checkpoints preserve conversation memory in PostgreSQL.
 
 ## Architecture
+
+### Ingest Opcenter manuals into pgvector (phase 3)
+
+The explicit importer selects pgvector for that job without changing `.env` or
+the API's rollback selector. With `DATABASE_URL` pointing to a pgvector-capable
+server, use either:
+
+```bash
+# Parse the PDFs in MANUALS_DIRECTORY using the existing extraction/chunking pipeline:
+.venv/bin/python -m src.pgvector_migrate --manuals
+
+# Import existing canonical JSON without parsing PDFs again:
+.venv/bin/python -m src.pgvector_migrate --backfill
+```
+
+Docker equivalents (after starting PostgreSQL as described below):
+
+```bash
+docker compose --profile tools build ingest
+docker compose --profile tools run --rm ingest python -m src.pgvector_migrate --manuals
+# Or reuse the backend image for a JSON-only import:
+docker compose run --rm --no-deps backend python -m src.pgvector_migrate --backfill
+```
+
+Both commands create/validate the schema before ingestion. `--manuals` honors
+the existing unchanged-document/hash logic; `--backfill` deliberately re-embeds
+the JSON snapshot. The cached, pinned self-hosted embedding model is loaded once
+per job. Texts are submitted in batches of at most 256. Existing normalization
+is retained: unit-length embeddings and squared-L2 distance give the same ranking
+as cosine distance. IDs, chunk ordering, citation page labels and nested metadata
+are preserved; parsing/chunking and the Chroma path are unchanged.
+
+Database writes use batched `executemany` inside one transaction to publish the
+two collection snapshots, not one transaction per chunk. Repeating an import
+retains the same collection/chunk IDs and removes stale IDs in those collections;
+it does not append duplicates. These are **full-corpus imports**, not a
+single-document update command. Preserve the complete JSON corpus when backfilling.
+
+After ingestion, a JSON summary reports `total_documents`, `total_chunks`
+(body chunks plus search representations), `missing_embeddings`,
+`missing_page_numbers`, `missing_document_ids`, `missing_parent_ids`,
+`duplicate_chunk_ids` (within collection namespaces), and `embedding_dimensions`.
+Counts come from PostgreSQL, not the input lists; stored IDs are also checked
+against local JSON. Invalid reports raise an error and the command exits nonzero.
+Invalid PDF pages and embedding dimensions are rejected before publication.
+Every imported PDF chunk receives a deterministic logical parent-section ID;
+printed page labels remain separate from the positive physical PDF page number.
+
+Run offline and restart API workers after ingestion, including unchanged imports,
+because JSON/DB publication and in-process caches are separate resources. Keep
+the rollback snapshots described below. For the relevant tests:
+
+```bash
+HF_HUB_OFFLINE=1 .venv/bin/python -m pytest tests/test_pgvector_ingest.py tests/test_vector_store.py tests/test_ingest.py tests/test_llm_embeddings.py -q
+```
+
+Real-database tests require `PGVECTOR_TEST_DATABASE_URL`; without it they skip.
+
+### Optional PostgreSQL vector storage (migration phase 2)
+
+`VECTOR_STORE=chroma` remains the default. Set `VECTOR_STORE=pgvector` only after
+backfilling and validating PostgreSQL. The same async psycopg pool serves vectors
+and PostgreSQL checkpoints, once per API process; SQLite checkpoints also work
+with pgvector. `DB_POOL_MIN_SIZE=1`, `DB_POOL_MAX_SIZE=10`, and
+`DB_POOL_TIMEOUT=30` configure pool capacity, acquisition timeout and the sync
+retriever's database wait limit (seconds). Two API replicas therefore allow up to
+20 connections, plus explicit offline jobs. Existing requirements already contain
+the necessary driver; no asyncpg or SQLAlchemy dependency is added.
+
+For a **new database volume**, configure `.env` using `.env.example`, then:
+
+```bash
+docker compose up -d postgres
+docker compose build backend
+docker compose run --rm --no-deps backend python -m src.pgvector_migrate --backfill
+```
+
+The command probes the pinned local SentenceTransformer, creates the extension
+and tables, embeds the existing JSON records, and verifies both collection ID
+sets. It does not re-extract PDFs or touch Chroma. Omitting `--backfill` creates
+and validates the schema only. Existing model caches must be available, or the
+pinned model must be downloaded on the first run.
+
+After the command succeeds, set `VECTOR_STORE=pgvector` in `.env` and restart
+the API with `docker compose up -d backend`. Keep the existing normal Redis,
+Chroma, frontend and proxy deployment. For subsequent PDF ingestion, run
+`docker compose --profile tools run --rm ingest`; the selected vector backend is
+updated. During ingestion, stop API traffic and restart the API afterward: local
+JSON and the vector database are not one atomic resource, and workers cache the
+local records. Do not run concurrent ingestion/backfill jobs.
+
+**Existing PostgreSQL volumes:** Compose now uses the upstream maintained
+`pgvector/pgvector:pg16` image rather than `postgres:16-alpine`. Do not blindly
+restart an existing database against a different image. Take and verify logical
+backups of checkpoint data, restore into a separate pgvector PostgreSQL 16
+instance/volume, validate compatibility (including libc/collation differences),
+and switch the connection URL under a maintenance window. Never delete the old
+volume. Pin the validated image digest for production deployments.
+
+Schema: `src/sql/001_pgvector.sql` creates `vector_model` and `document_chunks`.
+The vector dimension is generated from the configured model, measured locally
+as **384** for `all-MiniLM-L6-v2` at revision
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`. A different model, revision or dimension
+fails validation instead of mixing incompatible embeddings. Both body segments
+and search representations retain their IDs in separate collection namespaces;
+all metadata, including printed pages and nested table data, is retained in JSONB.
+`page_number` is the physical PDF page; printed labels stay in metadata.
+
+This phase uses exact squared-L2 search to retain the current Chroma distance
+convention. No HNSW/IVFFlat index, parallel hybrid retrieval, or new reranking
+behavior is introduced. Full parent evidence and BM25 remain backed by the local
+JSON files, which are still required. The repository also supports ordered
+parent-section chunk lookup; it does not yet change the existing expansion flow.
+
+Rollback: restore `VECTOR_STORE=chroma` and restart the API. Chroma is never
+deleted by pgvector backfill. If ingestion ran with pgvector selected, restore
+the matching pre-cutover `indexes/` and manuals snapshot before rollback, or
+explicitly rebuild Chroma against the new JSON first. Keep source snapshots,
+database backups and Chroma storage together; the selector alone cannot make
+different corpus generations consistent.
+
+Tests (real database tests never implicitly use the application's DATABASE_URL):
+
+```bash
+HF_HUB_OFFLINE=1 .venv/bin/python -m pytest -q
+# Supply a disposable database with pgvector installed and schema/extension privileges:
+PGVECTOR_TEST_DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/TEST_DB \
+  .venv/bin/python -m pytest tests/test_vector_store.py -q
+```
+
+The nine integration tests create and drop uniquely named test schemas only.
+They skip explicitly when `PGVECTOR_TEST_DATABASE_URL` is absent. Compose keeps
+PostgreSQL on its private network; a host-side test URL requires a separately
+provisioned test instance or explicitly configured localhost port forwarding.
+For host-side CLI use, set `DATABASE_URL` to that reachable server and run
+`.venv/bin/python -m src.pgvector_migrate --backfill`.
+
+See `docs/PGVECTOR_MIGRATION_PLAN.md` for phase status and remaining work.
+Implementation references: [pgvector](https://github.com/pgvector/pgvector) and
+[psycopg async pools](https://www.psycopg.org/psycopg3/docs/advanced/pool.html).
 
 ### System architecture
 
@@ -30,7 +223,7 @@ flowchart TB
     end
 
     subgraph RAG["RAG and model layer"]
-        Graph --> Retrieval["Hybrid retrieval<br/>Chroma + BM25 + weighted RRF"]
+        Graph --> Retrieval["Sequential hybrid retrieval<br/>Chroma or exact pgvector + BM25 + weighted RRF"]
         Retrieval --> Expansion["Neighbor-segment context expansion"]
         Expansion --> Reranker["Local cross-encoder reranker"]
         Reranker --> Context["EvidenceUnit resolution<br/>deterministic compression"]
@@ -42,7 +235,7 @@ flowchart TB
     subgraph Knowledge["Knowledge preparation · offline"]
         PDFs["Opcenter PDF manuals"] --> Ingest["Explicit ingestion job"]
         Ingest --> Units[("EvidenceUnits and retrieval segments")]
-        Units --> Vectors[("Chroma vectors")]
+        Units --> Vectors[("Chroma or opt-in pgvector vectors")]
         Units --> Lexical[("BM25 runtime index")]
         Ingest --> Figures[("Extracted manual figures")]
         Vectors --> Retrieval

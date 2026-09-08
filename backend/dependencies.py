@@ -20,6 +20,7 @@ from src.retrieval import load_resources
 from src.cache import close_cache, configure_cache
 from src.embeddings import create_embedding_model, create_reranker
 from src.request_store import RedisRequestStore
+from src.vector_store import PgVectorRepository, PgVectorClient, embedding_dimension
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,22 @@ def _serializer() -> JsonPlusSerializer:
     return JsonPlusSerializer(allowed_msgpack_modules=[("src.schemas", "SourceInfo")])
 
 
-async def _open_checkpointer(stack: AsyncExitStack):
+async def _open_postgres_pool(stack: AsyncExitStack):
+    pool = AsyncConnectionPool(
+        conninfo=settings.database_url,
+        min_size=getattr(settings, "db_pool_min_size", 1),
+        max_size=getattr(settings, "db_pool_max_size", 10),
+        timeout=getattr(settings, "db_pool_timeout", 30),
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+                "connect_timeout": getattr(settings, "db_pool_timeout", 30)},
+    )
+    stack.push_async_callback(pool.close)
+    await pool.open(wait=True)
+    return pool
+
+
+async def _open_checkpointer(stack: AsyncExitStack, pool=None):
     if settings.checkpoint_backend == "sqlite":
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -40,23 +56,12 @@ async def _open_checkpointer(stack: AsyncExitStack):
         await connection.execute("PRAGMA synchronous=NORMAL")
         await connection.execute("PRAGMA busy_timeout=30000")
         await connection.commit()
-        return AsyncSqliteSaver(connection, serde=_serializer()), None
+        return AsyncSqliteSaver(connection, serde=_serializer()), pool
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    pool = AsyncConnectionPool(
-        conninfo=settings.database_url,
-        min_size=1,
-        max_size=10,
-        open=False,
-        kwargs={
-            "autocommit": True,
-            "prepare_threshold": 0,
-            "row_factory": dict_row,
-        },
-    )
-    await pool.open(wait=True)
-    stack.push_async_callback(pool.close)
+    if pool is None:
+        pool = await _open_postgres_pool(stack)
     return AsyncPostgresSaver(pool, serde=_serializer()), pool
 
 
@@ -70,7 +75,7 @@ def validate_search_indexes(chroma_client) -> int:
         settings.retrieval_segments_path,
         settings.indexes_dir / "manifest.json",
     )
-    if settings.chroma_mode == "local":
+    if settings.vector_store == "chroma" and settings.chroma_mode == "local":
         required += (settings.chroma_dir / "chroma.sqlite3",)
     if any(not path.exists() for path in required):
         raise FileNotFoundError("indexes")
@@ -86,13 +91,26 @@ async def lifespan(app: FastAPI):
     stack = AsyncExitStack()
     try:
         settings.validate()
-        chroma_client = create_chroma_client(settings)
+        postgres_pool = None
+        if settings.checkpoint_backend == "postgres" or settings.vector_store == "pgvector":
+            postgres_pool = await _open_postgres_pool(stack)
+        app.state.postgres_pool = postgres_pool
+        embedding_model = await asyncio.to_thread(create_embedding_model, settings)
+        if settings.vector_store == "pgvector":
+            dimension = await asyncio.to_thread(embedding_dimension, embedding_model)
+            repository = PgVectorRepository(postgres_pool, dimension, settings.embedding_model, settings.embedding_model_revision,
+                                            search_mode=settings.pgvector_search_mode, ef_search=settings.hnsw_ef_search)
+            if not await repository.health_check():
+                raise RuntimeError("pgvector extension unavailable; run python -m src.pgvector_migrate")
+            app.state.vector_repository = repository
+            chroma_client = PgVectorClient(repository, asyncio.get_running_loop(), settings.db_pool_timeout)
+        else:
+            chroma_client = await asyncio.to_thread(create_chroma_client, settings)
         configure_chroma_client(chroma_client)
         stack.callback(configure_chroma_client, None)
-        validate_search_indexes(chroma_client)
+        await asyncio.to_thread(validate_search_indexes, chroma_client)
         # Load CPU models before accepting requests; retrieval only reuses these caches.
-        create_embedding_model(settings)
-        create_reranker(settings)
+        await asyncio.to_thread(create_reranker, settings)
         limiter = await RedisGroqLimiter.connect(settings)
         app.state.redis = limiter.client
         app.state.request_store = RedisRequestStore(
@@ -106,7 +124,7 @@ async def lifespan(app: FastAPI):
         stack.push_async_callback(limiter.close)
         initialize_async_groq_client(settings)
         stack.push_async_callback(close_async_groq_client)
-        checkpointer, postgres_pool = await _open_checkpointer(stack)
+        checkpointer, postgres_pool = await _open_checkpointer(stack, postgres_pool)
         app.state.postgres_pool = postgres_pool
         app.state.chroma_client = chroma_client
         setup_lock = limiter.client.lock(
@@ -129,6 +147,10 @@ async def lifespan(app: FastAPI):
         await stack.aclose()
         yield
         return
+    except BaseException:
+        # Cancellation during startup bypasses Exception and must still release resources.
+        await stack.aclose()
+        raise
 
     try:
         yield
@@ -151,7 +173,7 @@ async def readiness_checks(app: FastAPI) -> dict[str, bool]:
         "graph": getattr(app.state, "graph", None) is not None,
         "postgres": settings.checkpoint_backend == "sqlite",
         "redis": False,
-        "chroma": False,
+        settings.vector_store: False,
         "bm25": False,
         "evidence_units": False,
         "embedding_model": create_embedding_model.cache_info().currsize == 1,
@@ -173,7 +195,9 @@ async def readiness_checks(app: FastAPI) -> dict[str, bool]:
         collection = await asyncio.to_thread(
             app.state.chroma_client.get_collection, settings.chroma_collection
         )
-        checks["chroma"] = await asyncio.to_thread(collection.count) > 0
+        checks[settings.vector_store] = await asyncio.to_thread(collection.count) > 0
+        if settings.vector_store == "pgvector":
+            checks["pgvector"] = checks["pgvector"] and await app.state.vector_repository.health_check()
     except Exception:
         logger.warning("Readiness Chroma probe failed")
     try:

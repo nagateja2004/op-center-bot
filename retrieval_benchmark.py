@@ -136,10 +136,10 @@ def hybrid_retrieve(query: str, *, k: int, config: Any) -> list[dict[str, Any]]:
         rerank_documents,
         resolve_evidence_units,
         vector_search,
+        hybrid_search,
     )
 
-    vector = vector_search(query, config.vector_top_k, config=config)
-    lexical = bm25_search(query, config.bm25_top_k, config=config)
+    vector, lexical, _ = hybrid_search(query, config=config)
     fused = reciprocal_rank_fusion(
         vector,
         lexical,
@@ -163,13 +163,16 @@ def _run_one(
     config: Any,
     pipeline: Any,
 ) -> dict[str, Any]:
-    started = perf_counter()
-    documents = pipeline(query, k=k, config=config)
-    latency = perf_counter() - started
+    from src.retrieval_metrics import profile_retrieval
+    with profile_retrieval() as profile:
+        started = perf_counter()
+        documents = pipeline(query, k=k, config=config)
+        latency = perf_counter() - started
     ranked_ids = [_evidence_id(document) for document in documents]
     return {
         "retrieved_ids": ranked_ids,
         "latency_seconds": latency,
+        "stages_ms": {name: sum(values) for name, values in profile.items()},
         "metrics": score_ranked_ids(ranked_ids, relevant_ids, k=k),
     }
 
