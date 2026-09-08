@@ -1589,6 +1589,27 @@ def _copy_with_aspect(document: RetrievedDocument, aspect: str) -> RetrievedDocu
     return copied
 
 
+def _safe_compress_evidence(document, aspect, question, **kwargs):
+    """Keep bounded, cited evidence if optional compression fails at any call site."""
+    try:
+        return compress_evidence(document, aspect, question, **kwargs)
+    except Exception as exc:
+        logger.warning("context_compression_failed error=%s", type(exc).__name__)
+        text = document["text"][:kwargs.get("max_characters", 700)]
+        return {
+            "evidence_id": str(document["metadata"].get("evidence_id") or document["chunk_id"]),
+            "aspect": aspect,
+            "compressed_text": text,
+            "selected_sentence_indexes": [],
+            "selected_step_indexes": [],
+            "selected_table_row_indexes": [],
+            "compression_method": "bounded_original_fallback",
+            "original_character_count": len(document["text"]),
+            "compressed_character_count": len(text),
+            "source_metadata": {k: v for k, v in document["metadata"].items() if k != "compressed_views"},
+        }
+
+
 def _with_compressed_view(
     document: RetrievedDocument,
     aspect: str,
@@ -1598,7 +1619,7 @@ def _with_compressed_view(
     include_complete_procedure: bool,
 ) -> RetrievedDocument:
     copied = _copy_with_aspect(document, aspect)
-    copied["metadata"]["compressed_views"][aspect] = compress_evidence(
+    copied["metadata"]["compressed_views"][aspect] = _safe_compress_evidence(
         copied,
         aspect,
         question,
@@ -1817,7 +1838,7 @@ def _table_excerpt(rows: list[list[Any]], query: str, *, max_rows: int = 6) -> s
 def _grader_text(document: RetrievedDocument, aspect: str) -> str:
     view = document["metadata"].get("compressed_views", {}).get(aspect)
     if view is None:
-        view = compress_evidence(
+        view = _safe_compress_evidence(
             document,
             aspect,
             aspect,
@@ -1930,7 +1951,7 @@ def _answer_content(
     document: RetrievedDocument, query: str, include_complete_procedure: bool
 ) -> str:
     if include_complete_procedure and document["content_type"] == "procedure":
-        return compress_evidence(
+        return _safe_compress_evidence(
             document,
             query,
             query,
@@ -1952,7 +1973,7 @@ def _answer_content(
             ),
         )
     else:
-        view = compress_evidence(
+        view = _safe_compress_evidence(
             document,
             query,
             query,

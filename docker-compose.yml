@@ -10,7 +10,7 @@ services:
       retries: 10
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     networks: [data]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-opcenter}
@@ -117,6 +117,7 @@ services:
     env_file:
       - .env
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-opcenter}
       CHROMA_MODE: server
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
@@ -126,6 +127,8 @@ services:
       - huggingface_cache:/app/.cache/huggingface
       - paddle_cache:/home/appuser/.paddlex
     depends_on:
+      postgres:
+        condition: service_healthy
       chroma:
         condition: service_healthy
 

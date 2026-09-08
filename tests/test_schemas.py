@@ -42,6 +42,18 @@ def test_settings_reports_missing_api_key() -> None:
         Settings(groq_api_key="").validate()
 
 
+def test_settings_repr_does_not_expose_credentials() -> None:
+    config = Settings(
+        groq_api_key="gsk_fixture_secret",
+        evaluation_api_token="fixture_evaluation_secret",
+        database_url="postgresql://user:fixture_db_secret@localhost/test",
+        redis_url="redis://:fixture_redis_secret@localhost/0",
+    )
+    rendered = repr(config)
+    for secret in ("gsk_fixture_secret", "fixture_evaluation_secret", "fixture_db_secret", "fixture_redis_secret"):
+        assert secret not in rendered
+
+
 def test_settings_rejects_a_non_groq_api_key() -> None:
     with pytest.raises(EnvironmentError, match="beginning with 'gsk_'"):
         Settings(groq_api_key="another-provider-key").validate()

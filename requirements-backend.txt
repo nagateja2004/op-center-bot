@@ -2,6 +2,8 @@ fastapi==0.139.2
 uvicorn==0.51.0
 langgraph==1.2.9
 langgraph-checkpoint-postgres==3.1.0
+# Shared async PostgreSQL stack for LangGraph checkpoints and pgvector storage.
+# Vector values use bound text parameters: no second driver or codec dependency.
 psycopg[binary]==3.3.4
 psycopg-pool==3.3.1
 redis==6.4.0
